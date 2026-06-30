@@ -195,10 +195,24 @@ class Router:
                 continue
             try:
                 logger.info("Streaming via %s (model: %s)", pname, target_model)
+                stream_iter = prov.stream(self._http, target_model, messages, **kwargs)
+                first_chunk: bytes | None = None
+                try:
+                    first_chunk = await stream_iter.__anext__()
+                except StopAsyncIteration:
+                    return None, None
+                except (RateLimitError, ProviderError) as e:
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    continue
 
-                async def gen():
-                    async for chunk in prov.stream(self._http, target_model, messages, **kwargs):
+                async def gen(fc: bytes = first_chunk, si=stream_iter):
+                    yield fc
+                    async for chunk in si:
                         yield chunk
+
                 return gen(), None
             except (RateLimitError, ProviderError, Exception) as e:
                 last_error = e

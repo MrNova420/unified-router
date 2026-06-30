@@ -71,7 +71,7 @@ def build_providers(config: dict[str, Any]) -> dict[str, BaseProvider]:
     try:
         from .plugins import build_plugin_providers
         plugin_provs = build_plugin_providers(config)
-        providers.update(plugin_pros)
+        providers.update(plugin_provs)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("Plugin load failed: %s", e)

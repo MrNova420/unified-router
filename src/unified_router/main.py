@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import signal
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -15,6 +18,7 @@ from .router import Router
 logger = logging.getLogger(__name__)
 
 router_instance: Router | None = None
+_shutdown_event: Any = None
 
 
 class ChatRequest(BaseModel):
@@ -33,9 +37,20 @@ class ChatRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global router_instance
+    global router_instance, _shutdown_event
+    import asyncio
+    _shutdown_event = asyncio.Event()
+
     config = load_config()
     providers = build_providers(config)
+
+    if not providers:
+        logger.error(
+            "No providers configured! Set at least one API key. "
+            "Run 'unified-router init' or set env vars like OPENROUTER_API_KEY."
+        )
+        logger.warning("Starting anyway — requests will fail until a provider is configured.")
+
     priority = config.get("priority", [])
     router_instance = Router(
         providers,
@@ -55,13 +70,26 @@ async def lifespan(app: FastAPI):
     yield
     if router_instance:
         await router_instance.close()
+        router_instance = None
 
 
-app = FastAPI(
-    title="Unified Router",
-    version="0.4.0",
-    lifespan=lifespan,
-)
+def create_app() -> FastAPI:
+    _app = FastAPI(
+        title="Unified Router",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+    _app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    return _app
+
+
+app = create_app()
 
 
 @app.get("/v1/models")
@@ -183,11 +211,24 @@ poll(); setInterval(poll, 3000);
 </script></body></html>"""
 
 
+@app.get("/health")
+async def health():
+    if not router_instance:
+        return JSONResponse({"status": "initializing"}, status_code=503)
+    active = router_instance.get_active_providers()
+    total_configured = sum(1 for p in router_instance.providers.values() if p.is_configured)
+    return {
+        "status": "ok",
+        "providers_configured": total_configured,
+        "providers_active": len(active),
+        "providers_rate_limited": total_configured - len(active),
+        "models_cached": len(router_instance._all_models),
+    }
+
+
 @app.get("/admin")
 async def admin():
     from fastapi.responses import HTMLResponse
     return HTMLResponse(_ADMIN_HTML)
 
 
-def create_app() -> FastAPI:
-    return app

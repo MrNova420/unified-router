@@ -27,6 +27,7 @@ from .config import (
     PROVIDER_TYPE_COLORS,
 )
 from .registry import load_registry
+from . import __version__
 
 app = typer.Typer(
     name="unified-router",
@@ -39,6 +40,69 @@ console = Console()
 @app.callback()
 def callback():
     pass
+
+
+@app.command()
+def version():
+    console.print(f"unified-router v{__version__}")
+
+
+@app.command(name="models")
+def list_models(
+    url: str = typer.Option("http://127.0.0.1:3333", "--url", "-u", help="Router URL"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max models to show"),
+):
+    import httpx
+    try:
+        r = httpx.get(f"{url}/v1/models", timeout=10)
+        data = r.json().get("data", [])
+        total = len(data)
+        if limit > 0:
+            data = data[:limit]
+        table = Table(title=f"Available Models ({total} total, showing {len(data)})")
+        table.add_column("Model ID", style="cyan")
+        table.add_column("Owner", style="dim")
+        for m in data:
+            table.add_row(m.get("id", ""), m.get("owned_by", ""))
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Cannot reach router at {url}: {e}[/red]")
+
+
+@app.command(name="add-key")
+def add_key(
+    provider: str = typer.Argument(..., help="Provider name (e.g. openrouter, groq)"),
+    key: str = typer.Argument(..., help="API key value"),
+):
+    import yaml
+    if not CONFIG_FILE.exists():
+        console.print("[red]No config file found. Run 'unified-router init' first.[/red]")
+        raise typer.Exit(1)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    providers = config.setdefault("providers", {})
+    if provider not in providers:
+        providers[provider] = {}
+    providers[provider]["api_key"] = key
+    CONFIG_FILE.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    console.print(f"[green]API key set for {provider}[/green]")
+
+
+@app.command(name="remove-key")
+def remove_key(
+    provider: str = typer.Argument(..., help="Provider name"),
+):
+    import yaml
+    if not CONFIG_FILE.exists():
+        console.print("[red]No config file found.[/red]")
+        raise typer.Exit(1)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    providers = config.get("providers", {})
+    if provider not in providers:
+        console.print(f"[yellow]Provider '{provider}' not found in config.[/yellow]")
+        raise typer.Exit(1)
+    providers[provider].pop("api_key", None)
+    CONFIG_FILE.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    console.print(f"[green]API key removed for {provider}[/green]")
 
 
 def _start_server(host: str, port: int, log_level: str):

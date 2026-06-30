@@ -7,6 +7,9 @@ server:
   port: 3333
   log_level: "info"
 
+# Load balancing strategy: priority (default), round_robin, least_latency, weighted
+strategy: "priority"
+
 # Priority order: router tries providers top to bottom on failure
 # Top 6 are the most universally useful free providers.
 priority:
@@ -54,6 +57,22 @@ priority:
   - vercel_gateway
   - modal
   - inference_net
+
+# Pin specific models to a provider (bypasses routing)
+# model_pinning:
+#   "gpt-4o-mini": "openrouter"
+#   "claude-3-haiku": "openrouter"
+
+# Cache settings (off by default)
+# cache:
+#   enabled: true
+#   ttl: 3600
+
+# Weighted strategy weights (only used when strategy: "weighted")
+# load_balance_weights:
+#   openrouter: 5
+#   groq: 3
+#   nvidia: 2
 
 # Provider API keys — set these or use environment variables.
 # All standard env vars detected automatically.

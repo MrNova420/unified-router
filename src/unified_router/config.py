@@ -12,6 +12,24 @@ from .registry import load_registry
 CONFIG_DIR = Path.home() / ".config" / "unified-router"
 CONFIG_FILE = CONFIG_DIR / "config.yml"
 AUTH_FILE = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+ENV_FILE = Path.home() / ".config" / "unified-router" / ".env"
+
+
+def _load_dotenv(path: Path | None = None):
+    p = path or ENV_FILE
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 DEFAULT_PRIORITY = [
@@ -165,6 +183,7 @@ def detect_account_id(pcfg: dict) -> str | None:
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    _load_dotenv()
     cfg_path = Path(path) if path else CONFIG_FILE
 
     config = DEFAULT_CONFIG.copy()
