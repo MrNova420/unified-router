@@ -6,6 +6,33 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import re
+
+def configure_opencode(base_url: str = "http://localhost:3333/v1"):
+    opencode_cfg = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    if not opencode_cfg.exists():
+        return False, "OpenCode config not found"
+    
+    try:
+        content = opencode_cfg.read_text(encoding="utf-8")
+        # Basic JSONC to JSON: remove single line comments
+        json_content = re.sub(r"//.*", "", content)
+        data = json.loads(json_content)
+        
+        providers = data.setdefault("provider", {})
+        providers["unified-router"] = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Unified Router",
+            "options": {
+                "baseURL": base_url
+            }
+        }
+        
+        # Write back with nice formatting
+        opencode_cfg.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True, "Successfully configured OpenCode"
+    except Exception as e:
+        return False, str(e)
 
 from .registry import load_registry
 

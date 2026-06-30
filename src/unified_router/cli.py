@@ -25,6 +25,7 @@ from .config import (
     get_provider_type,
     PROVIDER_TYPE_BADGES,
     PROVIDER_TYPE_COLORS,
+    configure_opencode,
 )
 from .registry import load_registry
 from . import __version__
@@ -397,6 +398,16 @@ def init(
   }
 }'''
     console.print(Panel(snippet, border_style="blue", title="opencode.jsonc"))
+
+    console.print()
+    setup_opencode = input("  Would you like to automatically configure OpenCode? [Y/n]: ").strip().lower()
+    if setup_opencode == "y" or setup_opencode == "":
+        success, msg = configure_opencode()
+        if success:
+            console.print("[green]  [OK] OpenCode configured successfully![/green]")
+        else:
+            console.print(f"[red]  [ERR] Failed to configure OpenCode: {msg}[/red]")
+
 
 
 @app.command()
