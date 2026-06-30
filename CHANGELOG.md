@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.0
+
+- **Full auto model routing**: send `model: "auto"` or omit `model` entirely — router picks the best available model automatically
+- Provider-priority-first traversal: stays on each provider until ALL its models fail, then moves to next
+- 6 retries per model with realistic exponential backoff (2s, 5s, 10s, 20s, 40s, 60s)
+- Works for both streaming and non-streaming requests
+- Auto-routed responses include `_auto_provider` and `_auto_model` metadata
+- Streaming auto responses include an `auto_routed` SSE event prefix with provider/model info
+- `model` field in ChatRequest is now optional (defaults to `"auto"`)
+
 ## v1.0.0
 
 - Fixed streaming fallback bug: errors now detected before yielding chunks

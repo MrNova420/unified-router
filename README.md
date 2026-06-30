@@ -1,6 +1,6 @@
 # Unified Router
 
-**One endpoint to rule them all.** Route LLM requests across **44 free providers** worldwide with automatic fallback, model fallback, and a web settings panel.
+**One endpoint to rule them all.** Route LLM requests across **44 free providers** worldwide with automatic fallback, model fallback, full auto routing, and a web settings panel.
 
 ```bash
 pip install git+https://github.com/MrNova420/unified-router.git
@@ -14,6 +14,7 @@ unified-router start
 - **Auto-discovers** all models from every provider you configure
 - **Smart provider fallback** — if one provider rate-limits or errors, automatically tries the next
 - **Smart model fallback** — if ALL providers fail for a model, auto-finds similar models and retries across all providers
+- **Full auto model routing** — omit `model` or send `"auto"` — router picks the best available model automatically, with 6-retry backoff per model
 - **Streaming support** — real-time SSE passthrough with fallback on stream errors
 - **Web settings panel** — configure providers and server from your browser
 - **Works with OpenCode, Cursor, any OpenAI-compatible client**
@@ -64,6 +65,8 @@ Now in OpenCode, run `/models` and pick any model from any provider. The router 
 
 ## How Routing Works
 
+### Mode 1: Specific Model Request
+
 ```
 Request: model="qwen3-coder"
   → Try OpenRouter (has it?) → Yes → Send → 200? → Return ✓
@@ -76,12 +79,34 @@ Request: model="qwen3-coder"
   → All providers + all similar models failed → Return error
 ```
 
+### Mode 2: Auto Model Routing (model="auto" or omitted)
+
+```
+Request: model="auto" (or model field omitted)
+  → Provider 1 (OpenRouter) in priority order:
+      → Try model_1 → retry 6× (2s, 5s, 10s, 20s, 40s, 60s) → all fail?
+      → Try model_2 → retry 6× → all fail?
+      → ... try all models ... → ALL models on OpenRouter failed
+  → Provider 2 (NVIDIA):
+      → Try model_1 → retry 6× → success? → Return ✓
+  → All providers exhausted → Return error
+```
+
+The auto router stays on each provider until **every** model has been exhausted, then moves to the next provider. Retry delays (2s, 5s, 10s, 20s, 40s, 60s) are realistic for actual API rate limits — starting fast, then growing to ~1 minute for persistent issues.
+
 The router:
 1. Checks which providers have the requested model (fetched and cached)
 2. Tries providers in priority order
 3. On 429/5xx/connection error → automatically tries next provider
 4. If **all providers** fail for the requested model → searches for similar models and retries across all providers
 5. Returns the first successful response, or error if everything fails
+
+When `model` is `"auto"` or omitted, the router:
+1. Walks through providers in priority order
+2. On each provider, tries every model it offers (in API order)
+3. Each model gets 6 retries with backoff (2s, 5s, 10s, 20s, 40s, 60s)
+4. Stays on a provider until ALL its models fail, then moves to the next
+5. Returns the first successful response with `_auto_provider` and `_auto_model` metadata
 
 ## All 44 Supported Providers
 
@@ -288,6 +313,22 @@ The router loads this file automatically on startup.
 ### Automatic Provider Fallback
 If a provider rate-limits (429), errors (5xx), or times out, the router automatically tries the next provider in priority order that has the requested model.
 
+### Full Auto Model Routing
+Send `model: "auto"` (or omit the `model` field entirely) and the router picks the best available model automatically:
+- Walks providers in priority order
+- On each provider, tries every model in API order
+- Each model gets 6 retries with realistic backoff (2s → 5s → 10s → 20s → 40s → 60s)
+- Only moves to next provider after ALL models on current provider fail
+- Responses include `_auto_provider` and `_auto_model` fields
+- Streaming responses include an `auto_routed` SSE prefix event
+
+```bash
+# Auto routing — no model selection needed
+curl -X POST http://localhost:3333/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
 ### Automatic Model Fallback
 If **all providers** fail for the requested model, the router searches for **similar models** using token-overlap matching and tries those across all providers. The response includes `_fallback_model` and `_original_model` fields when a substitute was used.
 
@@ -383,6 +424,7 @@ unified-router start
 - [x] Auto-discover models from each provider's /v1/models
 - [x] Smart provider fallback (429/error → next provider)
 - [x] Smart model fallback (all providers fail → find similar models)
+- [x] Full auto model routing (model="auto" → try all models on all providers)
 - [x] Streaming support (SSE passthrough + fallback on error)
 - [x] Load balancing (priority, round-robin, least-latency, weighted)
 - [x] Per-model provider pinning

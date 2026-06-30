@@ -404,5 +404,200 @@ class Router:
             if p.is_configured
         }
 
+    AUTO_RETRY_DELAYS = [2, 5, 10, 20, 40, 60]
+
+    async def _auto_try_provider(
+        self, pname: str, prov: BaseProvider, messages: list, kwargs: dict,
+    ) -> tuple[dict | None, str | None]:
+        models = self._provider_models.get(pname, set())
+        if not models:
+            try:
+                fetched = await prov.fetch_models(self._http)
+                models = {m["id"] for m in fetched if m.get("id")}
+            except Exception:
+                return None, f"could not fetch models from {pname}"
+
+        model_list = [m for m in models if m]
+        if not model_list:
+            return None, f"no models available on {pname}"
+
+        last_err: str | None = None
+        for model_id in model_list:
+            for attempt, delay in enumerate(self.AUTO_RETRY_DELAYS):
+                if prov.is_rate_limited:
+                    break
+                try:
+                    logger.info(
+                        "Auto routing: %s / %s (attempt %d/%d)",
+                        pname, model_id, attempt + 1, len(self.AUTO_RETRY_DELAYS),
+                    )
+                    result = await prov.chat(self._http, model_id, messages, **kwargs)
+                    result["_auto_routed"] = True
+                    result["_auto_provider"] = pname
+                    result["_auto_model"] = model_id
+                    return result, None
+                except RateLimitError as e:
+                    last_err = str(e)
+                    logger.warning(
+                        "Auto: %s / %s rate limited (attempt %d), waiting %ds",
+                        pname, model_id, attempt + 1, delay,
+                    )
+                    prov.mark_rate_limited(retry_after=delay)
+                    await asyncio.sleep(delay)
+                except ProviderError as e:
+                    last_err = str(e)
+                    logger.warning(
+                        "Auto: %s / %s provider error (attempt %d): %s",
+                        pname, model_id, attempt + 1, e,
+                    )
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    last_err = str(e)
+                    logger.error(
+                        "Auto: %s / %s unexpected error (attempt %d): %s",
+                        pname, model_id, attempt + 1, e,
+                    )
+                    await asyncio.sleep(delay)
+        return None, last_err
+
+    async def _auto_try_provider_stream(
+        self, pname: str, prov: BaseProvider, messages: list, kwargs: dict,
+    ) -> tuple[AsyncIterator[bytes] | None, str | None]:
+        models = self._provider_models.get(pname, set())
+        if not models:
+            try:
+                fetched = await prov.fetch_models(self._http)
+                models = {m["id"] for m in fetched if m.get("id")}
+            except Exception:
+                return None, f"could not fetch models from {pname}"
+
+        model_list = [m for m in models if m]
+        if not model_list:
+            return None, f"no models available on {pname}"
+
+        last_err: str | None = None
+        for model_id in model_list:
+            for attempt, delay in enumerate(self.AUTO_RETRY_DELAYS):
+                if prov.is_rate_limited:
+                    break
+                try:
+                    logger.info(
+                        "Auto stream: %s / %s (attempt %d/%d)",
+                        pname, model_id, attempt + 1, len(self.AUTO_RETRY_DELAYS),
+                    )
+                    stream_iter = prov.stream(self._http, model_id, messages, **kwargs)
+                    first_chunk: bytes | None = None
+                    try:
+                        first_chunk = await stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        continue
+                    except (RateLimitError, ProviderError) as e:
+                        last_err = str(e)
+                        await asyncio.sleep(delay)
+                        continue
+                    except Exception as e:
+                        last_err = str(e)
+                        await asyncio.sleep(delay)
+                        continue
+
+                    async def gen(fc: bytes = first_chunk, si=stream_iter, pn=pname, mi=model_id):
+                        _auto_prefix = (f"data: {json.dumps({'auto_routed': True, 'provider': pn, 'model': mi})}\n\n").encode()
+                        yield _auto_prefix
+                        yield fc
+                        async for chunk in si:
+                            yield chunk
+
+                    return gen(), None
+                except RateLimitError as e:
+                    last_err = str(e)
+                    logger.warning(
+                        "Auto stream: %s / %s rate limited (attempt %d), waiting %ds",
+                        pname, model_id, attempt + 1, delay,
+                    )
+                    prov.mark_rate_limited(retry_after=delay)
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    last_err = str(e)
+                    logger.error(
+                        "Auto stream: %s / %s unexpected error (attempt %d): %s",
+                        pname, model_id, attempt + 1, e,
+                    )
+                    await asyncio.sleep(delay)
+        return None, last_err
+
+    async def route_auto(
+        self,
+        messages: list,
+        **kwargs,
+    ) -> dict:
+        if not self.providers:
+            raise ProviderError("No providers configured")
+
+        await self.fetch_all_models(force=True)
+
+        ordered = [
+            p for p in self.priority
+            if p in self.providers and self.providers[p].is_configured
+        ]
+        if not ordered:
+            raise ProviderError("No configured providers available for auto routing")
+
+        last_err: str | None = None
+        for pname in ordered:
+            prov = self.providers[pname]
+            if prov.is_rate_limited:
+                logger.info("Auto: skipping rate-limited provider %s", pname)
+                continue
+            result, err = await self._auto_try_provider(pname, prov, messages, kwargs)
+            if result is not None:
+                logger.info(
+                    "Auto routing succeeded: provider=%s model=%s",
+                    result.get("_auto_provider"), result.get("_auto_model"),
+                )
+                return result
+            if err:
+                last_err = err
+            logger.warning("Auto: provider %s exhausted, moving to next", pname)
+
+        raise ProviderError(
+            f"All providers exhausted in auto routing. Last error: {last_err}"
+        )
+
+    async def route_auto_stream(
+        self,
+        messages: list,
+        **kwargs,
+    ) -> AsyncIterator[bytes]:
+        if not self.providers:
+            raise ProviderError("No providers configured")
+
+        await self.fetch_all_models(force=True)
+
+        ordered = [
+            p for p in self.priority
+            if p in self.providers and self.providers[p].is_configured
+        ]
+        if not ordered:
+            raise ProviderError("No configured providers available for auto routing")
+
+        last_err: str | None = None
+        for pname in ordered:
+            prov = self.providers[pname]
+            if prov.is_rate_limited:
+                logger.info("Auto stream: skipping rate-limited provider %s", pname)
+                continue
+            gen, err = await self._auto_try_provider_stream(pname, prov, messages, kwargs)
+            if gen is not None:
+                async for chunk in gen:
+                    yield chunk
+                return
+            if err:
+                last_err = err
+            logger.warning("Auto stream: provider %s exhausted, moving to next", pname)
+
+        raise ProviderError(
+            f"All providers exhausted in auto stream routing. Last error: {last_err}"
+        )
+
     async def close(self):
         await self._http.aclose()

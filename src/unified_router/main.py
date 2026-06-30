@@ -22,7 +22,7 @@ _shutdown_event: Any = None
 
 
 class ChatRequest(BaseModel):
-    model: str
+    model: str | None = "auto"
     messages: list[dict[str, Any]]
     temperature: float | None = None
     top_p: float | None = None
@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     _app = FastAPI(
         title="Unified Router",
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
     _app.add_middleware(
@@ -126,27 +126,43 @@ async def chat_completion(body: ChatRequest, request: Request):
     if body.extra_body:
         kwargs.update(body.extra_body)
 
+    model_name = body.model or "auto"
+    is_auto = model_name.lower() == "auto"
+
     try:
         if body.stream:
             async def gen():
                 try:
-                    async for chunk in router_instance.route_stream(
-                        model=body.model,
-                        messages=body.messages,
-                        **kwargs,
-                    ):
-                        yield chunk
+                    if is_auto:
+                        async for chunk in router_instance.route_auto_stream(
+                            messages=body.messages,
+                            **kwargs,
+                        ):
+                            yield chunk
+                    else:
+                        async for chunk in router_instance.route_stream(
+                            model=model_name,
+                            messages=body.messages,
+                            **kwargs,
+                        ):
+                            yield chunk
                 except Exception as e:
                     import json as _json
                     err = {"error": {"message": str(e), "type": "router_error"}}
                     yield (f"data: {_json.dumps(err)}\n\n").encode()
             return StreamingResponse(gen(), media_type="text/event-stream")
 
-        result = await router_instance.route(
-            model=body.model,
-            messages=body.messages,
-            **kwargs,
-        )
+        if is_auto:
+            result = await router_instance.route_auto(
+                messages=body.messages,
+                **kwargs,
+            )
+        else:
+            result = await router_instance.route(
+                model=model_name,
+                messages=body.messages,
+                **kwargs,
+            )
         return result
     except Exception as e:
         logger.exception("Routing failed")
