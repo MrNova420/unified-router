@@ -9,17 +9,18 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import print as rprint
+from rich.text import Text
 
 from .config import (
     load_config,
     CONFIG_DIR,
     CONFIG_FILE,
     DEFAULT_CONFIG,
-    PROVIDER_NAMES,
-    PROVIDER_SIGNUP_URLS,
     detect_api_key,
+    detect_account_id,
+    get_provider_info,
 )
+from .registry import load_registry
 
 app = typer.Typer(
     name="unified-router",
@@ -57,6 +58,7 @@ def start(
 @app.command()
 def init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config"),
+    auto: bool = typer.Option(False, "--auto", "-a", help="Only use env-detected keys, skip interactive prompts"),
 ):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -66,46 +68,81 @@ def init(
         return
 
     console.print(Panel.fit(
-        "[bold cyan]Unified Router — Setup Wizard[/bold cyan]\n"
+        "[bold cyan]Unified Router - Setup Wizard[/bold cyan]\n"
         "Connect all your free LLM providers. We'll auto-detect any keys already in your environment.\n"
         "Press Enter to skip any provider you don't want to configure.",
         border_style="cyan",
     ))
 
+    registry = load_registry()
     config = DEFAULT_CONFIG.copy()
-    config["providers"] = {k: dict(v) for k, v in config["providers"].items()}
+    config["priority"] = list(DEFAULT_CONFIG["priority"])
+    config["providers"] = {k: dict(v) for k, v in DEFAULT_CONFIG["providers"].items()}
 
-    for name, pcfg in config["providers"].items():
-        display_name = PROVIDER_NAMES.get(name, name)
-        signup_url = PROVIDER_SIGNUP_URLS.get(name, "")
+    configured_count = 0
+    auto_detected_count = 0
 
+    # Collect all providers in priority order
+    all_providers: list[tuple[str, dict, str]] = []
+    for section_name, section_key in [("openai_compatible", "OpenAI Compatible"), ("custom", "Custom API")]:
+        for name, reg in registry.get(section_name, {}).items():
+            all_providers.append((name, reg, section_key))
+
+    for name, reg, section_key in all_providers:
+        display_name = reg.get("name", name)
+        signup_url = reg.get("signup_url", "")
+
+        pcfg = config["providers"].get(name, {})
         detected = detect_api_key(pcfg)
+        current_key = pcfg.get("api_key", "") or detected or ""
+
+        needs_account = bool(reg.get("env_account_id"))
+
+        if needs_account:
+            current_acct = detect_account_id(pcfg) or ""
+
+        if current_key and needs_account and current_acct:
+            config["providers"][name]["api_key"] = current_key
+            config["providers"][name]["account_id"] = current_acct
+            auto_detected_count += 1
+            configured_count += 1
+            continue
+
+        if current_key and not needs_account:
+            config["providers"][name]["api_key"] = current_key
+            auto_detected_count += 1
+            configured_count += 1
+            continue
+
+        if auto:
+            continue
 
         console.print()
-        console.print(f"[bold]{display_name}[/bold]")
+        console.print(f"[bold]{display_name}[/bold] [dim]({section_key})[/dim]")
 
-        if pcfg.get("env_account_id"):
-            from .config import detect_account_id
-            current_acct = detect_account_id(pcfg) or ""
-            acct_prompt = f"  Account ID [{current_acct}]: " if current_acct else "  Account ID (required): "
+        if needs_account:
+            current_acct_val = detect_account_id(pcfg) or ""
+            if not current_acct_val:
+                acct_prompt = f"  Account ID (required): "
+            else:
+                acct_prompt = f"  Account ID [{current_acct_val}]: "
             acct = input(acct_prompt).strip()
-            if not acct and current_acct:
-                acct = current_acct
+            if not acct and current_acct_val:
+                acct = current_acct_val
             if acct:
                 config["providers"][name]["account_id"] = acct
-
-        current_key = pcfg.get("api_key", "") or detected or ""
-        key_prompt = f"  API key [{current_key[:16]}...]: " if current_key and len(current_key) > 16 else f"  API key [{current_key}]: " if current_key else f"  API key (or press Enter to skip): "
+            else:
+                console.print(f"  [dim][--] {display_name} skipped (no account ID)[/dim]")
+                continue
 
         if signup_url:
             console.print(f"  Get key at: [blue]{signup_url}[/blue]")
 
-        key = input(key_prompt).strip()
-        if not key and current_key:
-            key = current_key
+        key = input(f"  API key (or press Enter to skip): ").strip()
 
         if key:
             config["providers"][name]["api_key"] = key
+            configured_count += 1
             console.print(f"  [green][OK] {display_name} configured[/green]")
         else:
             console.print(f"  [dim][--] {display_name} skipped[/dim]")
@@ -115,15 +152,15 @@ def init(
 
     console.print()
     console.print(Panel.fit(
-        "[bold green][OK] Setup complete![/bold green]\n"
-        f"Config saved to: {CONFIG_FILE}\n\n"
+        f"[bold green][OK] Setup complete![/bold green]\n"
+        f"Config saved to: {CONFIG_FILE}\n"
+        f"Providers configured: {configured_count} ({auto_detected_count} auto-detected)\n\n"
         "Run [bold]unified-router start[/bold] to start the server.",
         border_style="green",
     ))
 
     console.print()
     console.print("[bold]To use with OpenCode, add this to your opencode.jsonc:[/bold]")
-    console.print()
     snippet = '''{
   "$schema": "https://opencode.ai/config.json",
   "provider": {
@@ -145,46 +182,61 @@ def status():
 
     table = Table(title="Provider Status")
     table.add_column("Provider", style="cyan")
+    table.add_column("Category", style="dim")
     table.add_column("API Key", style="white")
     table.add_column("Status", style="green")
 
+    registry = load_registry()
+
     for name in config.get("priority", []):
         pcfg = config["providers"].get(name, {})
-        display = PROVIDER_NAMES.get(name, name)
+        info = get_provider_info(name)
+        display = info.get("name", name)
+
+        section = "OpenAI"
+        if any(name in registry.get("custom", {}) for _ in [1]):
+            section = "Custom"
+
         key = pcfg.get("api_key", "")
         if key:
             key_display = key[:12] + "..." if len(key) > 12 else key
             key_cell = f"[green]{key_display}[/green]"
-            status_cell = "[green][OK] Connected[/green]"
+            status_cell = "[green][OK] Configured[/green]"
         else:
             key_cell = "[dim]none[/dim]"
             status_cell = "[dim]Not configured[/dim]"
-        table.add_row(display, key_cell, status_cell)
+        table.add_row(display, section, key_cell, status_cell)
 
     console.print(table)
 
     server = config.get("server", {})
     console.print(f"\n[bold]Server:[/bold] http://{server.get('host', '127.0.0.1')}:{server.get('port', 3333)}")
-    console.print(f"\n[bold]Provider priority order:[/bold]")
-    for i, name in enumerate(config.get("priority", []), 1):
-        marker = "[green][OK][/green]" if config["providers"].get(name, {}).get("api_key") else "[dim][--][/dim]"
-        console.print(f"  {i}. {marker} {PROVIDER_NAMES.get(name, name)}")
+    console.print(f"[bold]Config:[/bold] {CONFIG_FILE}")
 
 
 @app.command()
 def config():
-    config = load_config()
-    print("Provider priority order:")
-    for i, name in enumerate(config.get("priority", []), 1):
-        pcfg = config["providers"].get(name, {})
+    cfg = load_config()
+    registry = load_registry()
+
+    console.print("[bold]Server Configuration:[/bold]")
+    server = cfg.get("server", {})
+    console.print(f"  Host: {server.get('host', '127.0.0.1')}")
+    console.print(f"  Port: {server.get('port', 3333)}")
+    console.print(f"  Log level: {server.get('log_level', 'info')}")
+
+    console.print(f"\n[bold]Provider Priority Order ({len(cfg.get('priority', []))}):[/bold]")
+    for i, name in enumerate(cfg.get("priority", []), 1):
+        info = get_provider_info(name)
+        display = info.get("name", name)
+        pcfg = cfg["providers"].get(name, {})
         status = "[CONFIGURED]" if pcfg.get("api_key") else "[NOT CONFIGURED]"
-        print(f"  {i}. {PROVIDER_NAMES.get(name, name)} {status}")
+        console.print(f"  {i:2d}. {display} {status}")
 
-    print(f"\nServer: http://{config['server']['host']}:{config['server']['port']}")
-    print(f"Config location: {CONFIG_FILE}")
+    console.print(f"\n[bold]Config file:[/bold] {CONFIG_FILE}")
 
-    print("\nOpenCode integration snippet:")
-    print('''{
+    console.print("\n[bold]OpenCode integration snippet:[/bold]")
+    snippet = '''{
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "unified-router": {
@@ -195,26 +247,39 @@ def config():
       }
     }
   }
-}''')
+}'''
+    console.print(Panel(snippet, border_style="blue"))
 
 
 @app.command()
 def providers():
+    registry = load_registry()
     config = load_config()
-    table = Table(title="Available Providers & Models")
-    table.add_column("Priority", style="dim")
+
+    table = Table(title=f"All Providers ({len(config.get('priority', []))})")
+    table.add_column("#", style="dim")
     table.add_column("Provider", style="cyan")
+    table.add_column("Type", style="dim")
     table.add_column("Status", style="green")
-    table.add_column("URL")
+    table.add_column("Free Tier")
 
     for i, name in enumerate(config.get("priority", []), 1):
+        info = get_provider_info(name)
+        display = info.get("name", name)
+        free_tier = info.get("free_tier", "")
+        section = "OpenAI"
+        for sname in ("openai_compatible",):
+            if name in registry.get(sname, {}):
+                section = "OpenAI Compatible"
+                break
+        if name in registry.get("custom", {}):
+            section = "Custom API"
         pcfg = config["providers"].get(name, {})
-        display = PROVIDER_NAMES.get(name, name)
-        status = "[green][OK][/green]" if pcfg.get("api_key") else "[dim][--] Not configured[/dim]"
-        url = PROVIDER_SIGNUP_URLS.get(name, "")
-        table.add_row(str(i), display, status, url)
+        status = "[green][OK][/green]" if pcfg.get("api_key") else "[dim][--][/dim]"
+        table.add_row(str(i), display, section, status, free_tier)
 
     console.print(table)
+    console.print(f"\n[dim]Total: {len(config.get('priority', []))} providers registered[/dim]")
 
 
 @app.command()
@@ -238,18 +303,20 @@ def health():
 
             for name, prov in providers.items():
                 import time
-                display = PROVIDER_NAMES.get(name, name)
+                info = get_provider_info(name)
+                display = info.get("name", name)
+
                 start = time.time()
                 try:
                     models = await prov.fetch_models(client)
                     latency = f"{(time.time() - start) * 1000:.0f}ms"
                     model_count = str(len(models))
-                    status = "[green][OK] Online[/green]"
+                    status_str = "[green][OK] Online[/green]"
                 except Exception as e:
                     latency = "-"
                     model_count = "-"
-                    status = f"[red][ERR] {e!s}[/red]"
-                table.add_row(display, status, model_count, latency)
+                    status_str = f"[red][ERR] {e!s}[/red]"
+                table.add_row(display, status_str, model_count, latency)
 
             console.print(table)
 
@@ -313,7 +380,6 @@ WantedBy=default.target
         console.print(f"  launchctl load {path}")
 
     else:
-        # Windows
         script_path = Path.home() / ".local" / "bin" / "unified-router-start.cmd"
         script_path.parent.mkdir(parents=True, exist_ok=True)
         script_path.write_text(f"""@echo off

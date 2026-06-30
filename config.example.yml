@@ -1,64 +1,77 @@
+# Unified Router Configuration
+# All 41+ providers are auto-discovered from registry.yaml.
+# You only need to set API keys — everything else is automatic.
+
 server:
   host: "127.0.0.1"
   port: 3333
   log_level: "info"
 
-# Priority order — router tries providers top to bottom
+# Priority order: router tries providers top to bottom on failure
+# Customize this list to your preference. Remove providers you don't use.
 priority:
   - openrouter
   - groq
   - cerebras
-  - cloudflare
-  - nvidia
-  - gemini
+  - deepseek
+  - together
+  - fireworks
+  - deepinfra
   - mistral
+  - codestral
+  - nvidia
+  - github_models
+  - gemini
   - cohere
   - huggingface
-  - deepseek
-  - github_models
+  - cloudflare
+  - ai302
+  - nebius
+  - novita
+  - hyperbolic
+  - sambanova
+  - scaleway
+  - venice
+  - baseten
+  - gmi_cloud
+  - io_net
+  - cortecs
+  - frogbot
+  - minimax
+  - moonshot
+  - ai21
+  - upstage
+  - nlp_cloud
+  - alibaba
+  - digitalocean
+  - ovhcloud
+  - stackit
+  - sap_ai
+  - snowflake
+  - ollama_cloud
+  - vercel_gateway
+  - modal
+  - inference_net
 
+# Provider API keys — set these or use environment variables.
+# All standard env vars (OPENROUTER_API_KEY, GROQ_API_KEY, etc.) 
+# are detected automatically. You only need to specify keys here
+# if you want to override env vars or set keys directly.
 providers:
   openrouter:
-    base_url: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
 
   groq:
-    base_url: "https://api.groq.com/openai/v1"
     api_key: "${GROQ_API_KEY}"
 
-  cerebras:
-    base_url: "https://api.cerebras.ai/v1"
-    api_key: "${CEREBRAS_API_KEY}"
-
+  # cloudflare needs both api_key and account_id
   cloudflare:
-    base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
     api_key: "${CLOUDFLARE_API_TOKEN}"
     account_id: "${CLOUDFLARE_ACCOUNT_ID}"
 
-  nvidia:
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key: "${NVIDIA_API_KEY}"
-
-  gemini:
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    api_key: "${GEMINI_API_KEY}"
-
-  mistral:
-    base_url: "https://api.mistral.ai/v1"
-    api_key: "${MISTRAL_API_KEY}"
-
+  # cohere, huggingface, etc — just add api_key as needed
   cohere:
-    base_url: "https://api.cohere.ai/v1"
     api_key: "${COHERE_API_KEY}"
 
   huggingface:
-    base_url: "https://router.huggingface.co/hf-inference/v1"
     api_key: "${HF_TOKEN}"
-
-  deepseek:
-    base_url: "https://api.deepseek.com/v1"
-    api_key: "${DEEPSEEK_API_KEY}"
-
-  github_models:
-    base_url: "https://models.inference.ai.azure.com/v1"
-    api_key: "${GITHUB_TOKEN}"

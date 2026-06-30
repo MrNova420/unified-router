@@ -1,111 +1,67 @@
-import os
+from __future__ import annotations
+
 import json
-import yaml
+import os
 from pathlib import Path
 from typing import Any
+
+import yaml
+
+from .registry import load_registry
 
 CONFIG_DIR = Path.home() / ".config" / "unified-router"
 CONFIG_FILE = CONFIG_DIR / "config.yml"
 AUTH_FILE = Path.home() / ".local" / "share" / "opencode" / "auth.json"
 
-DEFAULT_CONFIG = {
-    "server": {
-        "host": "127.0.0.1",
-        "port": 3333,
-        "log_level": "info",
-    },
-    "priority": [
-        "openrouter",
-        "groq",
-        "cerebras",
-        "cloudflare",
-        "nvidia",
-        "gemini",
-        "mistral",
-        "cohere",
-        "huggingface",
-        "deepseek",
-        "github_models",
-    ],
-    "providers": {
-        "openrouter": {
-            "base_url": "https://openrouter.ai/api/v1",
-            "env_key": "OPENROUTER_API_KEY",
-        },
-        "groq": {
-            "base_url": "https://api.groq.com/openai/v1",
-            "env_key": "GROQ_API_KEY",
-        },
-        "cerebras": {
-            "base_url": "https://api.cerebras.ai/v1",
-            "env_key": "CEREBRAS_API_KEY",
-        },
-        "cloudflare": {
-            "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
-            "env_account_id": "CLOUDFLARE_ACCOUNT_ID",
-            "env_key": "CLOUDFLARE_API_TOKEN",
-        },
-        "nvidia": {
-            "base_url": "https://integrate.api.nvidia.com/v1",
-            "env_key": "NVIDIA_API_KEY",
-        },
-        "gemini": {
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "env_key": "GEMINI_API_KEY",
-            "alt_env_keys": ["GOOGLE_API_KEY"],
-        },
-        "mistral": {
-            "base_url": "https://api.mistral.ai/v1",
-            "env_key": "MISTRAL_API_KEY",
-        },
-        "cohere": {
-            "base_url": "https://api.cohere.ai/v1",
-            "env_key": "COHERE_API_KEY",
-        },
-        "huggingface": {
-            "base_url": "https://router.huggingface.co/hf-inference/v1",
-            "env_key": "HF_TOKEN",
-            "alt_env_keys": ["HUGGINGFACE_TOKEN"],
-        },
-        "deepseek": {
-            "base_url": "https://api.deepseek.com/v1",
-            "env_key": "DEEPSEEK_API_KEY",
-        },
-        "github_models": {
-            "base_url": "https://models.inference.ai.azure.com/v1",
-            "env_key": "GITHUB_TOKEN",
-            "alt_env_keys": ["GITHUB_API_KEY"],
-        },
-    },
-}
 
-PROVIDER_NAMES = {
-    "openrouter": "OpenRouter",
-    "groq": "Groq",
-    "cerebras": "Cerebras",
-    "cloudflare": "Cloudflare Workers AI",
-    "nvidia": "NVIDIA NIM",
-    "gemini": "Google Gemini",
-    "mistral": "Mistral AI",
-    "cohere": "Cohere",
-    "huggingface": "HuggingFace",
-    "deepseek": "DeepSeek",
-    "github_models": "GitHub Models",
-}
+def _build_default_config() -> dict[str, Any]:
+    registry = load_registry()
+    priority: list[str] = []
+    providers: dict[str, dict[str, Any]] = {}
 
-PROVIDER_SIGNUP_URLS = {
-    "openrouter": "https://openrouter.ai/settings/keys",
-    "groq": "https://console.groq.com/keys",
-    "cerebras": "https://inference.cerebras.ai/",
-    "cloudflare": "https://dash.cloudflare.com/?to=/:account/workers/ai",
-    "nvidia": "https://build.nvidia.com",
-    "gemini": "https://aistudio.google.com/app/apikey",
-    "mistral": "https://console.mistral.ai/api-keys/",
-    "cohere": "https://dashboard.cohere.com/api-keys",
-    "huggingface": "https://huggingface.co/settings/tokens",
-    "deepseek": "https://platform.deepseek.com/api_keys",
-    "github_models": "https://github.com/settings/tokens",
-}
+    for name, reg in registry.get("openai_compatible", {}).items():
+        priority.append(name)
+        entry: dict[str, Any] = {
+            "base_url": reg.get("base_url", ""),
+            "env_key": reg.get("env_key", ""),
+        }
+        if reg.get("alt_env_keys"):
+            entry["alt_env_keys"] = reg["alt_env_keys"]
+        providers[name] = entry
+
+    for name, reg in registry.get("custom", {}).items():
+        priority.append(name)
+        entry = {
+            "base_url": reg.get("base_url", ""),
+            "env_key": reg.get("env_key", ""),
+        }
+        if reg.get("alt_env_keys"):
+            entry["alt_env_keys"] = reg["alt_env_keys"]
+        if reg.get("env_account_id"):
+            entry["env_account_id"] = reg["env_account_id"]
+        providers[name] = entry
+
+    return {
+        "server": {
+            "host": "127.0.0.1",
+            "port": 3333,
+            "log_level": "info",
+        },
+        "priority": priority,
+        "providers": providers,
+    }
+
+
+DEFAULT_CONFIG = _build_default_config()
+
+
+def get_provider_info(name: str) -> dict[str, Any]:
+    registry = load_registry()
+    for section in ("openai_compatible", "custom"):
+        reg = registry.get(section, {}).get(name)
+        if reg:
+            return reg
+    return {}
 
 
 def resolve_env(value: str) -> str:
@@ -147,7 +103,8 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     cfg_path = Path(path) if path else CONFIG_FILE
 
     config = DEFAULT_CONFIG.copy()
-    config["providers"] = {k: dict(v) for k, v in config["providers"].items()}
+    config["priority"] = list(DEFAULT_CONFIG["priority"])
+    config["providers"] = {k: dict(v) for k, v in DEFAULT_CONFIG["providers"].items()}
 
     if cfg_path.exists():
         raw = yaml.safe_load(cfg_path.read_text())

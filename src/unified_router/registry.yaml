@@ -1,0 +1,309 @@
+# Registry of all providers supported by unified-router
+# OpenAI-compatible providers share ONE handler class.
+# Custom-API providers each have their own adapter file.
+#
+# Adding a new OpenAI-compatible provider = add 6 lines here, no code.
+
+openai_compatible:
+  openrouter:
+    name: "OpenRouter"
+    base_url: "https://openrouter.ai/api/v1"
+    env_key: "OPENROUTER_API_KEY"
+    signup_url: "https://openrouter.ai/settings/keys"
+    free_tier: "20 req/min, 50 req/day (free models)"
+
+  groq:
+    name: "Groq"
+    base_url: "https://api.groq.com/openai/v1"
+    env_key: "GROQ_API_KEY"
+    signup_url: "https://console.groq.com/keys"
+    free_tier: "1000-14000 req/day per model"
+
+  cerebras:
+    name: "Cerebras"
+    base_url: "https://api.cerebras.ai/v1"
+    env_key: "CEREBRAS_API_KEY"
+    signup_url: "https://inference.cerebras.ai/"
+    free_tier: "30 req/min, 900 req/hr"
+
+  nvidia:
+    name: "NVIDIA NIM"
+    base_url: "https://integrate.api.nvidia.com/v1"
+    env_key: "NVIDIA_API_KEY"
+    signup_url: "https://build.nvidia.com"
+    free_tier: "40 req/min (phone verify)"
+
+  mistral:
+    name: "Mistral La Plateforme"
+    base_url: "https://api.mistral.ai/v1"
+    env_key: "MISTRAL_API_KEY"
+    signup_url: "https://console.mistral.ai/api-keys/"
+    free_tier: "1 req/s, 1B tokens/mo (opt-in training)"
+
+  codestral:
+    name: "Mistral Codestral"
+    base_url: "https://codestral.mistral.ai/v1"
+    env_key: "CODESTRAL_API_KEY"
+    signup_url: "https://codestral.mistral.ai/"
+    free_tier: "30 req/min, 2000 req/day"
+
+  deepseek:
+    name: "DeepSeek"
+    base_url: "https://api.deepseek.com/v1"
+    env_key: "DEEPSEEK_API_KEY"
+    signup_url: "https://platform.deepseek.com/api_keys"
+    free_tier: "Paid (very cheap)"
+
+  together:
+    name: "Together AI"
+    base_url: "https://api.together.xyz/v1"
+    env_key: "TOGETHER_API_KEY"
+    signup_url: "https://api.together.xyz/settings/api-keys"
+    free_tier: "$1 trial credits"
+
+  fireworks:
+    name: "Fireworks AI"
+    base_url: "https://api.fireworks.ai/inference/v1"
+    env_key: "FIREWORKS_API_KEY"
+    signup_url: "https://fireworks.ai/account/api-keys"
+    free_tier: "$1 free credits"
+
+  deepinfra:
+    name: "Deep Infra"
+    base_url: "https://api.deepinfra.com/v1/openai"
+    env_key: "DEEPINFRA_API_KEY"
+    signup_url: "https://deepinfra.com/dash"
+    free_tier: "Pay-as-you-go (cheap)"
+
+  github_models:
+    name: "GitHub Models"
+    base_url: "https://models.inference.ai.azure.com/v1"
+    env_key: "GITHUB_TOKEN"
+    alt_env_keys: ["GITHUB_API_KEY"]
+    signup_url: "https://github.com/settings/tokens"
+    free_tier: "Free with GitHub Copilot (any tier)"
+
+  ai302:
+    name: "302.AI"
+    base_url: "https://api.302.ai/v1"
+    env_key: "AI302_API_KEY"
+    signup_url: "https://302.ai/"
+    free_tier: "Free tier available"
+
+  nebius:
+    name: "Nebius AI"
+    base_url: "https://api.studio.nebius.ai/v1"
+    env_key: "NEBIUS_API_KEY"
+    signup_url: "https://tokenfactory.nebius.com/"
+    free_tier: "$1 free credits"
+
+  novita:
+    name: "Novita AI"
+    base_url: "https://api.novita.ai/v1"
+    env_key: "NOVITA_API_KEY"
+    signup_url: "https://novita.ai/"
+    free_tier: "$0.5 free credits (1yr)"
+
+  hyperbolic:
+    name: "Hyperbolic"
+    base_url: "https://api.hyperbolic.xyz/v1"
+    env_key: "HYPERBOLIC_API_KEY"
+    signup_url: "https://app.hyperbolic.ai/"
+    free_tier: "$1 free credits"
+
+  sambanova:
+    name: "SambaNova Cloud"
+    base_url: "https://api.sambanova.ai/v1"
+    env_key: "SAMBANOVA_API_KEY"
+    signup_url: "https://cloud.sambanova.ai/"
+    free_tier: "$5 free credits (3mo)"
+
+  scaleway:
+    name: "Scaleway AI"
+    base_url: "https://api.scaleway.ai/v1"
+    env_key: "SCALEWAY_API_KEY"
+    signup_url: "https://console.scaleway.com/generative-api/models"
+    free_tier: "1M free tokens"
+
+  venice:
+    name: "Venice AI"
+    base_url: "https://api.venice.ai/api/v1"
+    env_key: "VENICE_API_KEY"
+    signup_url: "https://venice.ai/"
+    free_tier: "Free tier available"
+
+  baseten:
+    name: "Baseten"
+    base_url: "https://bridge.baseten.co/v1"
+    env_key: "BASETEN_API_KEY"
+    signup_url: "https://app.baseten.co/"
+    free_tier: "$30 free credits"
+
+  gmi_cloud:
+    name: "GMI Cloud"
+    base_url: "https://api.gmicloud.ai/v1"
+    env_key: "GMI_CLOUD_API_KEY"
+    signup_url: "https://console.gmicloud.ai/"
+    free_tier: "Free tier available"
+
+  io_net:
+    name: "IO.NET"
+    base_url: "https://api.io.net/v1"
+    env_key: "IO_NET_API_KEY"
+    signup_url: "https://ai.io.net/"
+    free_tier: "Free tier available (17 models)"
+
+  cortecs:
+    name: "Cortecs AI"
+    base_url: "https://api.cortecs.ai/v1"
+    env_key: "CORTECS_API_KEY"
+    signup_url: "https://cortecs.ai/"
+    free_tier: "Free tier available"
+
+  frogbot:
+    name: "FrogBot"
+    base_url: "https://api.frogbot.ai/v1"
+    env_key: "FROGBOT_API_KEY"
+    signup_url: "https://app.frogbot.ai/"
+    free_tier: "Free tier available"
+
+  minimax:
+    name: "MiniMax AI"
+    base_url: "https://api.minimax.chat/v1"
+    env_key: "MINIMAX_API_KEY"
+    signup_url: "https://platform.minimax.io/"
+    free_tier: "Free tier available"
+
+  moonshot:
+    name: "Moonshot AI"
+    base_url: "https://api.moonshot.cn/v1"
+    env_key: "MOONSHOT_API_KEY"
+    signup_url: "https://platform.moonshot.ai/"
+    free_tier: "Free tier available (Kimi K2)"
+
+  ai21:
+    name: "AI21 Labs"
+    base_url: "https://api.ai21.com/studio/v1"
+    env_key: "AI21_API_KEY"
+    signup_url: "https://studio.ai21.com/"
+    free_tier: "$10 free credits (3mo)"
+
+  upstage:
+    name: "Upstage AI"
+    base_url: "https://api.upstage.ai/v1"
+    env_key: "UPSTAGE_API_KEY"
+    signup_url: "https://console.upstage.ai/"
+    free_tier: "$10 free credits (3mo)"
+
+  nlp_cloud:
+    name: "NLP Cloud"
+    base_url: "https://api.nlpcloud.io/v1"
+    env_key: "NLP_CLOUD_API_KEY"
+    signup_url: "https://nlpcloud.com/"
+    free_tier: "$15 free credits (phone verify)"
+
+  alibaba:
+    name: "Alibaba Cloud Model Studio"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    env_key: "ALIBABA_API_KEY"
+    signup_url: "https://bailian.console.alibabacloud.com/"
+    free_tier: "1M free tokens/model"
+
+  digitalocean:
+    name: "DigitalOcean GPU"
+    base_url: "https://api.digitalocean.ai/v1"
+    env_key: "DIGITALOCEAN_API_KEY"
+    signup_url: "https://cloud.digitalocean.com/"
+    free_tier: "Free tier available"
+
+  ovhcloud:
+    name: "OVHcloud AI Endpoints"
+    base_url: "https://ai-endpoints.ovh.net/v1"
+    env_key: "OVHCLOUD_API_KEY"
+    signup_url: "https://endpoints.ai.cloud.ovh.net/"
+    free_tier: "Free tier available"
+
+  stackit:
+    name: "STACKIT AI"
+    base_url: "https://ai.api.stackit.cloud/v1"
+    env_key: "STACKIT_API_KEY"
+    signup_url: "https://stackit.cloud/"
+    free_tier: "Free tier available"
+
+  sap_ai:
+    name: "SAP AI Core"
+    base_url: "https://api.ai.prod.eu-central-1.aws.sap.com/v1"
+    env_key: "SAP_AI_API_KEY"
+    signup_url: "https://ai.sap.com/"
+    free_tier: "Free tier available"
+
+  snowflake:
+    name: "Snowflake Cortex AI"
+    base_url: "https://api.snowflake.ai/v1"
+    env_key: "SNOWFLAKE_API_KEY"
+    signup_url: "https://snowflake.com/"
+    free_tier: "Free tier available"
+
+  ollama_cloud:
+    name: "Ollama Cloud"
+    base_url: "https://api.ollama.cloud/v1"
+    env_key: "OLLAMA_CLOUD_API_KEY"
+    signup_url: "https://ollama.com/"
+    free_tier: "Free tier available"
+
+  vercel_gateway:
+    name: "Vercel AI Gateway"
+    base_url: "https://gateway.ai.vercel.ai/v1"
+    env_key: "VERCEL_AI_API_KEY"
+    signup_url: "https://vercel.com/docs/ai-gateway"
+    free_tier: "$5/mo free tier"
+
+  modal:
+    name: "Modal"
+    base_url: "https://api.modal.com/v1"
+    env_key: "MODAL_API_KEY"
+    signup_url: "https://modal.com/"
+    free_tier: "$5/mo free credits, $30/mo w/ payment"
+
+  inference_net:
+    name: "Inference.net"
+    base_url: "https://api.inference.net/v1"
+    env_key: "INFERENCE_NET_API_KEY"
+    signup_url: "https://inference.net/"
+    free_tier: "$1 free credits, $25 w/ survey"
+
+custom:
+  gemini:
+    name: "Google Gemini"
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    env_key: "GEMINI_API_KEY"
+    alt_env_keys: ["GOOGLE_API_KEY"]
+    signup_url: "https://aistudio.google.com/app/apikey"
+    free_tier: "20-1500 req/day per model"
+
+  cloudflare:
+    name: "Cloudflare Workers AI"
+    adapter: "cloudflare"
+    base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    env_key: "CLOUDFLARE_API_TOKEN"
+    env_account_id: "CLOUDFLARE_ACCOUNT_ID"
+    signup_url: "https://dash.cloudflare.com/?to=/:account/workers/ai"
+    free_tier: "10k neurons/day"
+
+  cohere:
+    name: "Cohere"
+    adapter: "cohere"
+    base_url: "https://api.cohere.ai/v1"
+    env_key: "COHERE_API_KEY"
+    signup_url: "https://dashboard.cohere.com/api-keys"
+    free_tier: "20 req/min, 1000 req/mo"
+
+  huggingface:
+    name: "HuggingFace Inference"
+    adapter: "huggingface"
+    base_url: "https://router.huggingface.co/hf-inference/v1"
+    env_key: "HF_TOKEN"
+    alt_env_keys: ["HUGGINGFACE_TOKEN"]
+    signup_url: "https://huggingface.co/settings/tokens"
+    free_tier: "$0.10/mo credits"

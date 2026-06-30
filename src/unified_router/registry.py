@@ -1,42 +1,71 @@
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
 from typing import Any
 
-from .provider import BaseProvider, RateLimitError, ProviderError
+import yaml
+
+from .provider import BaseProvider
 from .providers.openai_compat import OpenAICompatibleProvider
-from .providers.gemini import GeminiProvider
-from .providers.cloudflare import CloudflareProvider
+
+REGISTRY_PATH = Path(__file__).parent / "registry.yaml"
+
+_registry_cache: dict[str, Any] | None = None
 
 
-PROVIDER_CLASSES: dict[str, type[BaseProvider]] = {
-    "openrouter": OpenAICompatibleProvider,
-    "groq": OpenAICompatibleProvider,
-    "cerebras": OpenAICompatibleProvider,
-    "nvidia": OpenAICompatibleProvider,
-    "mistral": OpenAICompatibleProvider,
-    "cohere": OpenAICompatibleProvider,
-    "huggingface": OpenAICompatibleProvider,
-    "deepseek": OpenAICompatibleProvider,
-    "github_models": OpenAICompatibleProvider,
-    "gemini": GeminiProvider,
-    "cloudflare": CloudflareProvider,
-}
+def load_registry() -> dict[str, Any]:
+    global _registry_cache
+    if _registry_cache is not None:
+        return _registry_cache
+    with open(REGISTRY_PATH, encoding="utf-8") as f:
+        _registry_cache = yaml.safe_load(f)
+    return _registry_cache
+
+
+def _get_provider_class(adapter: str | None) -> type[BaseProvider]:
+    if adapter is None:
+        return OpenAICompatibleProvider
+    mod_path = f"unified_router.providers.{adapter}"
+    mod = importlib.import_module(mod_path)
+    for attr_name in dir(mod):
+        attr = getattr(mod, attr_name)
+        if isinstance(attr, type) and issubclass(attr, BaseProvider) and attr is not BaseProvider:
+            return attr
+    raise ValueError(f"No provider class found in module {mod_path}")
 
 
 def build_providers(config: dict[str, Any]) -> dict[str, BaseProvider]:
+    registry = load_registry()
     providers: dict[str, BaseProvider] = {}
     pconfigs = config.get("providers", {})
-    for name, pcls in PROVIDER_CLASSES.items():
+
+    for name, reg in registry.get("openai_compatible", {}).items():
         if name not in pconfigs:
             continue
         pcfg = pconfigs[name]
         if not pcfg.get("api_key"):
             continue
-        if pcls.requires_account_id and not pcfg.get("account_id"):
-            continue
-        instance = pcls(pcfg)
-        instance.name = pcfg.get("display_name", instance.name or name)
+        instance = OpenAICompatibleProvider(pcfg)
+        instance.name = reg.get("name", name)
         if not instance.base_url:
-            instance.base_url = pcfg.get("base_url", "")
+            instance.base_url = pcfg.get("base_url", reg.get("base_url", ""))
         providers[name] = instance
+
+    for name, reg in registry.get("custom", {}).items():
+        if name not in pconfigs:
+            continue
+        pcfg = pconfigs[name]
+        if not pcfg.get("api_key"):
+            continue
+        adapter_name = reg.get("adapter", "")
+        cls = _get_provider_class(adapter_name)
+        if cls.requires_account_id and not pcfg.get("account_id") and not reg.get("env_account_id"):
+            continue
+        instance = cls(pcfg)
+        instance.name = reg.get("name", name)
+        if not instance.base_url:
+            instance.base_url = pcfg.get("base_url", reg.get("base_url", ""))
+        providers[name] = instance
+
     return providers
