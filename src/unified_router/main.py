@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from .config import load_config
+from .config import load_config, CONFIG_DIR
 from .registry import build_providers
 from .router import Router
 
@@ -187,7 +187,7 @@ td,th{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d}
 th{color:#8b949e}a{color:#58a6ff}
 </style></head><body>
 <h1>Unified Router Admin</h1>
-<div class="card"><a href="/docs">API Docs (Swagger)</a> | <a href="/v1/models">/v1/models</a> | <a href="/v1/stats">/v1/stats (JSON)</a></div>
+<div class="card"><a href="/docs">API Docs (Swagger)</a> | <a href="/v1/models">/v1/models</a> | <a href="/v1/stats">/v1/stats (JSON)</a> | <a href="/settings">/settings</a></div>
 <div class="card" id="stats"></div>
 <div class="card" id="models"></div>
 <script>
@@ -208,6 +208,85 @@ async function poll(){
   }catch(e){document.getElementById('models').innerHTML='<p class=err>'+e+'</p>'}
 }
 poll(); setInterval(poll, 3000);
+</script></body></html>"""
+
+
+_SETTINGS_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Unified Router Settings</title>
+<style>
+body{font-family:system-ui;background:#0d1117;color:#c9d1d9;margin:0;padding:20px}
+h1{color:#58a6ff}.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin:12px 0}
+.btn{background:#238636;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
+.btn:hover{background:#2ea043}input,select{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:4px;color:white}
+.table{width:100%;border-collapse:collapse}.table th,.table td{border:1px solid #30363d;padding:8px;text-align:left}
+</style></head><body>
+<h1>Unified Router Settings</h1>
+<div class="card">
+<h2>Server Settings</h2>
+<form id="serverForm">
+  <label>Host: <input name="host" /> </label>
+  <label>Port: <input name="port" type="number" /> </label>
+  <label>Log Level:
+    <select name="log_level">
+      <option value="debug">debug</option><option value="info">info</option><option value="warning">warning</option>
+    </select>
+  </label>
+  <button type="submit" class="btn">Save Server</button>
+</form>
+</div>
+
+<div class="card">
+<h2>Providers</h2>
+<p>Configure API keys for each provider.</p>
+<div id="providers"></div>
+<button id="saveAll" class="btn">Save All Keys</button>
+</div>
+
+<script>
+const apiBase = window.location.origin;
+async function load() {
+  const r = await fetch(apiBase + '/settings/api');
+  const d = await r.json();
+  document.querySelector('[name=host]').value = d.server?.host || '127.0.0.1';
+  document.querySelector('[name=port]').value = d.server?.port || 3333;
+  document.querySelector('[name=log_level]').value = d.server?.log_level || 'info';
+  const provDiv = document.getElementById('providers');
+  provDiv.innerHTML = '<table class=table><tr><th>Provider</th><th>API Key</th><th>Status</th></tr>';
+  for (const [name, p] of Object.entries(d.providers || {})) {
+    provDiv.innerHTML += `<tr>
+      <td>${name}</td>
+      <td><input type="password" data-name="${name}" value="${p.api_key||''}" placeholder="API Key" style="width:100%" /></td>
+      <td>${p.configured ? '✅' : '❌'}</td>
+    </tr>`;
+  }
+  provDiv.innerHTML += '</table>';
+}
+document.getElementById('serverForm').onsubmit = async e => {
+  e.preventDefault();
+  const r = await fetch(apiBase + '/settings/server', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      host: document.querySelector('[name=host]').value,
+      port: parseInt(document.querySelector('[name=port]').value),
+      log_level: document.querySelector('[name=log_level]').value
+    })
+  });
+  alert(await r.text());
+};
+document.getElementById('saveAll').onclick = async () => {
+  const keys = {};
+  document.querySelectorAll('input[data-name]').forEach(inp => {
+    keys[inp.dataset.name] = inp.value;
+  });
+  const r = await fetch(apiBase + '/settings/keys', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({keys})
+  });
+  alert(await r.text());
+};
+load(); setInterval(load, 10000);
 </script></body></html>"""
 
 
@@ -232,3 +311,51 @@ async def admin():
     return HTMLResponse(_ADMIN_HTML)
 
 
+@app.get("/settings")
+async def settings_page():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(_SETTINGS_HTML)
+
+
+@app.get("/settings/api")
+async def get_settings_api():
+    if not router_instance:
+        raise HTTPException(503, "Router not initialized")
+    config = load_config()
+    providers_status = {}
+    for name, prov in router_instance.providers.items():
+        providers_status[name] = {
+            "api_key": prov.api_key,
+            "configured": prov.is_configured,
+        }
+    return {
+        "server": config.get("server", {}),
+        "providers": providers_status,
+        "priority": config.get("priority", []),
+    }
+
+
+@app.post("/settings/server")
+async def save_server(req: Request):
+    body = await req.json()
+    import yaml
+    cfg_path = CONFIG_DIR / "config.yml"
+    config = yaml.safe_load(cfg_path.read_text()) if cfg_path.exists() else {}
+    config.setdefault("server", {}).update(body)
+    cfg_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    return {"status": "saved"}
+
+
+@app.post("/settings/keys")
+async def save_keys(req: Request):
+    body = await req.json()
+    keys = body.get("keys", {})
+    import yaml
+    cfg_path = CONFIG_DIR / "config.yml"
+    config = yaml.safe_load(cfg_path.read_text()) if cfg_path.exists() else {}
+    provs = config.setdefault("providers", {})
+    for name, key in keys.items():
+        if name in provs:
+            provs[name]["api_key"] = key
+    cfg_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    return {"status": "saved"}
