@@ -27,7 +27,11 @@ unified-router start
 ## Install
 
 ```bash
+# Standard install
 pip install git+https://github.com/MrNova420/unified-router.git
+
+# For Ubuntu/Debian users (if you get 'externally-managed-environment' error):
+pip install git+https://github.com/MrNova420/unified-router.git --break-system-packages
 ```
 
 Or clone and install locally:

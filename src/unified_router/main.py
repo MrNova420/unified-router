@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 import asyncio
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
 from .config import load_config, CONFIG_DIR
@@ -211,6 +211,11 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/admin")
 
 
 @app.get("/v1/models")

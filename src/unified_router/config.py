@@ -9,11 +9,20 @@ import yaml
 import re
 
 def configure_opencode(base_url: str = "http://localhost:3333/v1"):
-    opencode_cfg = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-    if not opencode_cfg.exists():
-        return False, "OpenCode config not found"
+    opencode_cfg_dir = Path.home() / ".config" / "opencode"
+    opencode_cfg = opencode_cfg_dir / "opencode.jsonc"
     
     try:
+        opencode_cfg_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not opencode_cfg.exists():
+            # Create default minimal config if it doesn't exist
+            initial_data = {
+                "$schema": "https://opencode.ai/config.json",
+                "provider": {}
+            }
+            opencode_cfg.write_text(json.dumps(initial_data, indent=2), encoding="utf-8")
+        
         content = opencode_cfg.read_text(encoding="utf-8")
         # Basic JSONC to JSON: remove single line comments
         json_content = re.sub(r"//.*", "", content)
