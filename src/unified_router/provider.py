@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, AsyncIterator
 
 
 class RouteError(Exception):
@@ -30,6 +30,10 @@ class BaseProvider(ABC):
         self._models_ts: float = 0
         self._rate_limited_until: float = 0
         self.consecutive_failures: int = 0
+        self.latency_ema: float = 0.0
+        self.request_count: int = 0
+        self.error_count: int = 0
+        self.token_count: int = 0
 
     @property
     def is_configured(self) -> bool:
@@ -43,8 +47,18 @@ class BaseProvider(ABC):
         self._rate_limited_until = time.time() + retry_after
         self.consecutive_failures += 1
 
-    def mark_success(self):
+    def mark_success(self, latency: float = 0.0, tokens: int = 0):
         self.consecutive_failures = 0
+        self.request_count += 1
+        if latency > 0:
+            if self.latency_ema == 0:
+                self.latency_ema = latency
+            else:
+                self.latency_ema = 0.7 * self.latency_ema + 0.3 * latency
+        self.token_count += tokens
+
+    def mark_error(self):
+        self.error_count += 1
 
     @abstractmethod
     async def fetch_models(self, client: Any) -> list[dict]:
@@ -55,6 +69,34 @@ class BaseProvider(ABC):
         self, client: Any, model: str, messages: list, **kwargs
     ) -> dict:
         ...
+
+    async def stream(
+        self, client: Any, model: str, messages: list, **kwargs
+    ) -> AsyncIterator[bytes]:
+        result = await self.chat(client, model, messages, **kwargs)
+        import json
+        chunk = {
+            "id": result.get("id", "chatcmpl-unknown"),
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant",
+                    "content": result["choices"][0]["message"]["content"],
+                },
+                "finish_reason": None,
+            }],
+        }
+        yield (f"data: {json.dumps(chunk)}\n\n").encode()
+        done_chunk = {
+            "id": result.get("id", "chatcmpl-unknown"),
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        yield (f"data: {json.dumps(done_chunk)}\n\n").encode()
+        yield b"data: [DONE]\n\n"
 
     def get_headers(self) -> dict[str, str]:
         return {

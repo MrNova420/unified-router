@@ -470,6 +470,70 @@ def health():
 
 
 @app.command()
+def dashboard(
+    url: str = typer.Option("http://127.0.0.1:3333", "--url", "-u", help="Router URL"),
+    interval: float = typer.Option(2.0, "--interval", "-i", help="Refresh interval seconds"),
+    once: bool = typer.Option(False, "--once", help="Print once and exit"),
+):
+    import httpx
+    import time
+
+    def _render(data: dict):
+        table = Table(title="Unified Router - Live Dashboard")
+        table.add_column("Provider", style="cyan")
+        table.add_column("Reqs", style="white")
+        table.add_column("Errors", style="red")
+        table.add_column("Tokens", style="green")
+        table.add_column("Latency", style="white")
+        table.add_column("Status", style="yellow")
+
+        provs = data.get("providers", {})
+        total_reqs = 0
+        total_tokens = 0
+        total_errors = 0
+        for name, s in provs.items():
+            reqs = s.get("requests", 0)
+            errs = s.get("errors", 0)
+            toks = s.get("tokens", 0)
+            lat = s.get("latency_ema_ms", 0)
+            rl = s.get("rate_limited", False)
+            status = "[red]RATE LIMITED[/red]" if rl else "[green]OK[/green]"
+            table.add_row(name, str(reqs), str(errs), str(toks), f"{lat}ms", status)
+            total_reqs += reqs
+            total_tokens += toks
+            total_errors += errs
+
+        console.print(table)
+        console.print(f"[bold]Totals:[/bold] {total_reqs} reqs | {total_tokens} tokens | {total_errors} errors")
+
+        cache_info = data.get("cache", {})
+        if cache_info:
+            console.print(f"[bold]Cache:[/bold] {cache_info.get('hits',0)} hits / {cache_info.get('misses',0)} misses | {cache_info.get('size',0)} entries")
+
+    if once:
+        try:
+            r = httpx.get(f"{url}/v1/stats", timeout=5)
+            _render(r.json())
+        except Exception as e:
+            console.print(f"[red]Cannot reach router at {url}: {e}[/red]")
+        return
+
+    console.print(f"[dim]Live dashboard — polling {url} every {interval}s. Ctrl+C to exit.[/dim]")
+    try:
+        with httpx.Client(timeout=5) as c:
+            while True:
+                console.clear()
+                try:
+                    r = c.get(f"{url}/v1/stats")
+                    _render(r.json())
+                except Exception as e:
+                    console.print(f"[red]Cannot reach router at {url}: {e}[/red]")
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Dashboard stopped.[/dim]")
+
+
+@app.command()
 def guide():
     console.print(Panel.fit(
         "[bold cyan]Unified Router - Getting Started Guide[/bold cyan]\n"

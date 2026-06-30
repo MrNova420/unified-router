@@ -68,4 +68,12 @@ def build_providers(config: dict[str, Any]) -> dict[str, BaseProvider]:
             instance.base_url = pcfg.get("base_url", reg.get("base_url", ""))
         providers[name] = instance
 
+    try:
+        from .plugins import build_plugin_providers
+        plugin_provs = build_plugin_providers(config)
+        providers.update(plugin_pros)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Plugin load failed: %s", e)
+
     return providers

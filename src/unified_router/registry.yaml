@@ -75,7 +75,7 @@ openai_compatible:
     type: paid
 
   xai:
-    name: "xAI Grok"
+    name: "xAI"
     base_url: "https://api.x.ai/v1"
     env_key: "XAI_API_KEY"
     signup_url: "https://console.x.ai/"

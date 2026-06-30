@@ -118,6 +118,7 @@ Now in OpenCode, run `/models` and pick any model from any provider. The router 
 | `unified-router health` | Ping all providers, check connectivity |
 | `unified-router config` | Print current config |
 | `unified-router guide` | Walk through signing up for top providers |
+| `unified-router dashboard` | Live usage stats (terminal) |
 | `unified-router install-service` | Install as system service |
 
 ## Docker
@@ -253,13 +254,69 @@ unified-router init
 unified-router start
 ```
 
+## Features
+
+### Automatic Fallback (Provider)
+If a provider rate-limits (429), errors (5xx), or times out, the router automatically tries the next provider in priority order that has the requested model.
+
+### Automatic Model Fallback
+If **all providers** fail for the requested model, the router searches for **similar models** (token-overlap matching) and tries those across all providers. The response includes `_fallback_model` and `_original_model` fields when a substitute was used.
+
+### Streaming Support
+Pass `"stream": true` in your `/v1/chat/completions` request. The router streams Server-Sent Events chunks from the provider in real-time. OpenAI-compatible providers stream natively; custom adapters (Gemini, Cohere, Cloudflare) fall back to simulated streaming. If the streaming provider fails mid-stream, the router falls back to the next provider.
+
+### Load Balancing Strategies
+Set `strategy` in config.yml:
+```yaml
+strategy: priority       # default — try providers top-to-bottom
+strategy: round_robin    # rotate through providers per request
+strategy: least_latency  # use provider with lowest EMA latency
+strategy: weighted       # use load_balance_weights (below)
+load_balance_weights:
+  openrouter: 5
+  groq: 3
+```
+
+### Per-Model Provider Pinning
+Force a specific model to always use a specific provider:
+```yaml
+model_pinning:
+  gpt-4o: openrouter
+  llama-3.3-70b: groq
+```
+
+### Request/Response Caching
+```yaml
+cache:
+  enabled: true
+  ttl: 3600  # seconds
+```
+Identical requests (same model + messages + params) return cached results without hitting the provider, saving your free-tier quota.
+
+### Usage Tracking & Dashboard
+Every provider tracks requests, errors, tokens, and latency (exponential moving average). View live:
+- **Web UI:** Open `http://localhost:3333/admin` in your browser
+- **JSON API:** `GET /v1/stats`
+- **Terminal:** `unified-router dashboard` (live-refreshing) or `unified-router dashboard --once`
+
+### Plugin System
+Drop a `.py` file in `~/.config/unified-router/plugins/` containing a `BaseProvider` subclass. It's auto-discovered and added to your providers. Configure it under a `plugins:` section in config.yml:
+```yaml
+plugins:
+  my_custom_provider:
+    api_key: "..."
+    base_url: "https://my-internal-llm/v1"
+```
+
 ## Roadmap
 
-- [ ] Per-model provider pinning (force specific models to specific providers)
-- [ ] Load balancing (use multiple providers simultaneously)
-- [ ] Usage dashboard (rich terminal UI)
-- [ ] Request/response caching
-- [ ] Streaming support
+- [x] Per-model provider pinning
+- [x] Load balancing (priority, round-robin, least-latency, weighted)
+- [x] Usage dashboard (terminal UI + web admin)
+- [x] Request/response caching
+- [x] Streaming support
+- [x] Plugin system for custom providers
+- [x] Web UI for stats at /admin
+- [x] Automatic model fallback when all providers fail
 - [ ] Prompt template optimization per provider
-- [ ] Plugin system for custom providers
-- [ ] Web UI for managing config
+- [ ] PyPI release

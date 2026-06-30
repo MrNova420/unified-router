@@ -1,6 +1,6 @@
 [project]
 name = "unified-router"
-version = "0.3.0"
+version = "0.4.0"
 description = "Unified LLM API router — auto-routes requests across all free LLM providers with smart fallback"
 readme = "README.md"
 requires-python = ">=3.10"
