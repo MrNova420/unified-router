@@ -5,20 +5,50 @@ import signal
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
+import asyncio
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .config import load_config, CONFIG_DIR
 from .registry import build_providers
 from .router import Router
+from .observability import new_trace, current_trace, setup_logging
+from .provider import ProviderError, RateLimitError, AuthError
+from .queue import RequestQueue
 
 logger = logging.getLogger(__name__)
 
 router_instance: Router | None = None
 _shutdown_event: Any = None
+_config_mtime: float = 0
+request_queue: RequestQueue | None = None
+
+
+async def _reload_providers():
+    global router_instance
+    if not router_instance:
+        return
+    config = load_config()
+    providers = build_providers(config)
+    if not providers:
+        logger.warning("Reload produced zero providers — keeping current config")
+        return
+    old = router_instance
+    router_instance = Router(
+        providers,
+        config.get("priority", old.priority),
+        strategy=config.get("strategy", old.strategy),
+        model_pinning=config.get("model_pinning", old.model_pinning),
+        enable_cache=config.get("cache", {}).get("enabled", old.enable_cache),
+        cache_ttl=config.get("cache", {}).get("ttl", old.cache_ttl),
+        load_balance_weights=config.get("load_balance_weights", old.load_balance_weights),
+    )
+    await router_instance.fetch_all_models(force=True)
+    await old.close()
+    logger.info("Hot reload: %d providers, %d models", len(providers), len(router_instance._all_models))
 
 
 class ChatRequest(BaseModel):
@@ -34,6 +64,27 @@ class ChatRequest(BaseModel):
     seed: int | None = None
     extra_body: dict[str, Any] | None = None
 
+    @field_validator("messages")
+    @classmethod
+    def messages_not_empty(cls, v):
+        if not v:
+            raise ValueError("messages must not be empty")
+        return v
+
+    @field_validator("temperature")
+    @classmethod
+    def temp_range(cls, v):
+        if v is not None and (v < 0 or v > 2):
+            raise ValueError("temperature must be between 0 and 2")
+        return v
+
+    @field_validator("max_tokens")
+    @classmethod
+    def max_tokens_range(cls, v):
+        if v is not None and (v < 1 or v > 128000):
+            raise ValueError("max_tokens must be between 1 and 128000")
+        return v
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,6 +93,7 @@ async def lifespan(app: FastAPI):
     _shutdown_event = asyncio.Event()
 
     config = load_config()
+    setup_logging(config.get("server", {}).get("log_level", "info"))
     providers = build_providers(config)
 
     if not providers:
@@ -67,7 +119,36 @@ async def lifespan(app: FastAPI):
         len(providers),
         len(router_instance._all_models),
     )
+
+    async def _watch_config():
+        global _config_mtime
+        cfg_path = CONFIG_DIR / "config.yml"
+        if cfg_path.exists():
+            _config_mtime = cfg_path.stat().st_mtime
+        while not _shutdown_event.is_set():
+            await asyncio.sleep(5)
+            if not cfg_path.exists():
+                continue
+            mtime = cfg_path.stat().st_mtime
+            if mtime != _config_mtime:
+                _config_mtime = mtime
+                logger.info("Config file changed — hot reloading")
+                try:
+                    await _reload_providers()
+                except Exception as e:
+                    logger.error("Hot reload failed: %s", e)
+
+    watcher_task = asyncio.create_task(_watch_config())
+
+    global request_queue
+    request_queue = RequestQueue(max_size=100, worker_count=10)
+    await request_queue.start()
+
     yield
+    _shutdown_event.set()
+    watcher_task.cancel()
+    if request_queue:
+        await request_queue.stop()
     if router_instance:
         await router_instance.close()
         router_instance = None
@@ -76,7 +157,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     _app = FastAPI(
         title="Unified Router",
-        version="1.1.0",
+        version="2.0.0",
         lifespan=lifespan,
     )
     _app.add_middleware(
@@ -86,6 +167,46 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @_app.middleware("http")
+    async def trace_middleware(request: Request, call_next):
+        trace = new_trace()
+        logger.info("Request %s %s", request.method, request.url.path)
+        start = __import__("time").time()
+        response = await call_next(request)
+        elapsed = (__import__("time").time() - start) * 1000
+        logger.info(
+            "Request %s %s completed in %.0fms (trace: %s)",
+            request.method, request.url.path, elapsed, trace.request_id,
+        )
+        response.headers["X-Request-ID"] = trace.request_id
+        return response
+
+    @_app.exception_handler(ProviderError)
+    @_app.exception_handler(RateLimitError)
+    @_app.exception_handler(AuthError)
+    async def provider_error_handler(request: Request, exc: Exception):
+        status = 503
+        err_type = "provider_error"
+        if isinstance(exc, AuthError):
+            status = 401
+            err_type = "auth_error"
+        elif isinstance(exc, RateLimitError):
+            status = 429
+            err_type = "rate_limit_error"
+        return JSONResponse(
+            status_code=status,
+            content={"error": {"message": str(exc), "type": err_type}},
+        )
+
+    @_app.exception_handler(Exception)
+    async def generic_error_handler(request: Request, exc: Exception):
+        logger.exception("Unhandled error")
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": "Internal server error", "type": "internal_error"}},
+        )
+
     return _app
 
 
@@ -182,7 +303,7 @@ async def stats():
     if not router_instance:
         raise HTTPException(503, "Router not initialized")
     provs = router_instance.stats()
-    return {
+    result = {
         "providers": provs,
         "cache": {
             "hits": router_instance._cache_hits if hasattr(router_instance, "_cache_hits") else 0,
@@ -190,6 +311,9 @@ async def stats():
             "size": len(router_instance._cache),
         },
     }
+    if request_queue:
+        result["queue"] = request_queue.stats()
+    return result
 
 
 _ADMIN_HTML = """<!DOCTYPE html>
@@ -203,7 +327,7 @@ td,th{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d}
 th{color:#8b949e}a{color:#58a6ff}
 </style></head><body>
 <h1>Unified Router Admin</h1>
-<div class="card"><a href="/docs">API Docs (Swagger)</a> | <a href="/v1/models">/v1/models</a> | <a href="/v1/stats">/v1/stats (JSON)</a> | <a href="/settings">/settings</a></div>
+<div class="card"><a href="/docs">API Docs (Swagger)</a> | <a href="/v1/models">/v1/models</a> | <a href="/v1/stats">/v1/stats (JSON)</a> | <a href="/settings">/settings</a> | <a href="/reload" onclick="fetch('/reload',{method:'POST'}).then(r=>r.json()).then(d=>alert(JSON.stringify(d)));return false;">Reload Config</a></div>
 <div class="card" id="stats"></div>
 <div class="card" id="models"></div>
 <script>
@@ -212,10 +336,11 @@ async function poll(){
     const s = await fetch('/v1/stats'); const sj = await s.json();
     const ps = sj.providers||{}; const c = sj.cache||{};
     let rows = Object.entries(ps).map(([n,v])=>{
-      const st = v.rate_limited ? '<span class=warn>RATE LIMITED</span>' : '<span class=stat>OK</span>';
-      return `<tr><td>${n}</td><td>${v.requests}</td><td class=err>${v.errors}</td><td>${v.tokens}</td><td>${v.latency_ema_ms}ms</td><td>${st}</td></tr>`;
+      const st = v.rate_limited ? '<span class=warn>RATE LIMITED</span>' : v.circuit_state === 'OPEN' ? '<span class=err>CIRCUIT OPEN</span>' : '<span class=stat>OK</span>';
+      const cb = v.circuit_state || 'CLOSED';
+      return `<tr><td>${n}</td><td>${v.requests}</td><td class=err>${v.errors}</td><td>${v.tokens}</td><td>${v.latency_ema_ms}ms</td><td>${st}</td><td>${cb}</td></tr>`;
     }).join('');
-    document.getElementById('stats').innerHTML = '<h2>Provider Stats</h2><table><tr><th>Provider</th><th>Reqs</th><th>Errors</th><th>Tokens</th><th>Latency</th><th>Status</th></tr>'+rows+`</table><p>Cache: ${c.hits||0} hits / ${c.misses||0} misses | ${c.size||0} entries</p>`;
+    document.getElementById('stats').innerHTML = '<h2>Provider Stats</h2><table><tr><th>Provider</th><th>Reqs</th><th>Errors</th><th>Tokens</th><th>Latency</th><th>Status</th><th>Circuit</th></tr>'+rows+`</table><p>Cache: ${c.hits||0} hits / ${c.misses||0} misses | ${c.size||0} entries</p>`;
   }catch(e){document.getElementById('stats').innerHTML='<p class=err>'+e+'</p>'}
   try{
     const m = await fetch('/v1/models'); const mj = await m.json();
@@ -312,13 +437,27 @@ async def health():
         return JSONResponse({"status": "initializing"}, status_code=503)
     active = router_instance.get_active_providers()
     total_configured = sum(1 for p in router_instance.providers.values() if p.is_configured)
+    deep = await router_instance.deep_health()
+    ok_count = sum(1 for v in deep.values() if v.get("status") == "ok")
     return {
-        "status": "ok",
+        "status": "ok" if ok_count > 0 else "degraded",
         "providers_configured": total_configured,
         "providers_active": len(active),
         "providers_rate_limited": total_configured - len(active),
         "models_cached": len(router_instance._all_models),
+        "providers": deep,
     }
+
+
+@app.post("/reload")
+async def reload_config():
+    if not router_instance:
+        raise HTTPException(503, "Router not initialized")
+    try:
+        await _reload_providers()
+        return {"status": "reloaded", "providers": len(router_instance.providers), "models": len(router_instance._all_models)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "reload_error"}})
 
 
 @app.get("/admin")
@@ -341,7 +480,7 @@ async def get_settings_api():
     providers_status = {}
     for name, prov in router_instance.providers.items():
         providers_status[name] = {
-            "api_key": prov.api_key,
+            "api_key": prov.mask_api_key(),
             "configured": prov.is_configured,
         }
     return {

@@ -1,5 +1,22 @@
 # Changelog
 
+# Changelog
+
+## v2.0.0
+
+- **Production-grade reliability**: Circuit breaker per provider (no more hammering dead APIs)
+- **Realistic retry with retry-after**: When rate limited, uses the ACTUAL `Retry-After` header from providers, not hardcoded numbers. Waits as long as the provider says.
+- **Concurrency control**: Per-provider semaphore limits prevent overwhelming any single provider
+- **Request queue with backpressure**: Gracefully handles provider outages by queuing instead of failing immediately. Configurable max queue size.
+- **Structured observability**: Request tracing with UUIDs, structured logging, per-request latency tracking across all provider attempts
+- **Input validation**: Pydantic validators on `temperature`, `max_tokens`, `messages` (not empty)
+- **Consistent error handling**: Standardized error responses (401/429/503/500), centralized exception handlers per error type
+- **Deep health checks**: `/health` now pings every provider and reports real status per provider (not just "ok")
+- **Hot reload**: Config file changes are detected and reloaded without restart. Also `/reload` endpoint for manual trigger
+- **Security**: API keys masked in `/settings/api`, `AuthError` for 401s, per-provider health status endpoint
+- **Admin dashboard**: Now shows circuit breaker state per provider, visual indicators for rate limited vs circuit open vs OK
+- **Tests**: 14 tests covering circuit breaker, provider initialization, error handling, health status
+
 ## v1.1.0
 
 - **Full auto model routing**: send `model: "auto"` or omit `model` entirely — router picks the best available model automatically

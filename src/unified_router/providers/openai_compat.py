@@ -65,7 +65,7 @@ class OpenAICompatibleProvider(BaseProvider):
             retry_after = int(resp.headers.get("retry-after", "60"))
             self.mark_rate_limited(retry_after)
             self.mark_error()
-            raise RateLimitError(f"{self.name} rate limited: {resp.text}")
+            raise RateLimitError(f"{self.name} rate limited: {resp.text}", retry_after=retry_after)
 
         if resp.status_code == 401:
             self.mark_error()

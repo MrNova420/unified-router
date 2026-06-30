@@ -1,6 +1,6 @@
-# Unified Router
+# Unified Router v2.0.0
 
-**One endpoint to rule them all.** Route LLM requests across **44 free providers** worldwide with automatic fallback, model fallback, full auto routing, and a web settings panel.
+**One endpoint to rule them all.** Production-grade LLM router across **44 free providers** with circuit breakers, real retry-after handling, request queues, input validation, and observability.
 
 ```bash
 pip install git+https://github.com/MrNova420/unified-router.git
@@ -10,13 +10,18 @@ unified-router start
 
 ## What it does
 
+- **Production-grade circuit breaker** per provider — stops calling dead APIs before they hurt you
+- **Real retry-after handling** — when rate limited, waits the ACTUAL time the provider says (not a guess)
 - **Single OpenAI-compatible endpoint** (`/v1/chat/completions`)
 - **Auto-discovers** all models from every provider you configure
 - **Smart provider fallback** — if one provider rate-limits or errors, automatically tries the next
 - **Smart model fallback** — if ALL providers fail for a model, auto-finds similar models and retries across all providers
 - **Full auto model routing** — omit `model` or send `"auto"` — router picks the best available model automatically, with 6-retry backoff per model
+- **Structured observability** — request tracing with UUIDs, per-request latency tracking, structured logging
+- **Input validation** — Pydantic validates temperature, max_tokens, messages, etc.
 - **Streaming support** — real-time SSE passthrough with fallback on stream errors
 - **Web settings panel** — configure providers and server from your browser
+- **Hot reload** — config changes detected and applied without restarting
 - **Works with OpenCode, Cursor, any OpenAI-compatible client**
 
 ## Install
@@ -84,7 +89,7 @@ Request: model="qwen3-coder"
 ```
 Request: model="auto" (or model field omitted)
   → Provider 1 (OpenRouter) in priority order:
-      → Try model_1 → retry 6× (2s, 5s, 10s, 20s, 40s, 60s) → all fail?
+      → Try model_1 → retry 6× (using Retry-After header if present) → all fail?
       → Try model_2 → retry 6× → all fail?
       → ... try all models ... → ALL models on OpenRouter failed
   → Provider 2 (NVIDIA):
@@ -92,7 +97,7 @@ Request: model="auto" (or model field omitted)
   → All providers exhausted → Return error
 ```
 
-The auto router stays on each provider until **every** model has been exhausted, then moves to the next provider. Retry delays (2s, 5s, 10s, 20s, 40s, 60s) are realistic for actual API rate limits — starting fast, then growing to ~1 minute for persistent issues.
+The auto router stays on each provider until **every** model has been exhausted, then moves to the next provider. When a provider returns a `Retry-After` header, the router **legitimately waits** that exact amount of time (up to 5 minutes). If the header isn't present, it uses a fallback schedule: 5s → 10s → 20s → 40s → 60s → 120s.
 
 The router:
 1. Checks which providers have the requested model (fetched and cached)
@@ -104,7 +109,7 @@ The router:
 When `model` is `"auto"` or omitted, the router:
 1. Walks through providers in priority order
 2. On each provider, tries every model it offers (in API order)
-3. Each model gets 6 retries with backoff (2s, 5s, 10s, 20s, 40s, 60s)
+3. Each model gets 6 retries with smart backoff (uses Retry-After if provided, else fallback schedule)
 4. Stays on a provider until ALL its models fail, then moves to the next
 5. Returns the first successful response with `_auto_provider` and `_auto_model` metadata
 
@@ -113,7 +118,7 @@ When `model` is `"auto"` or omitted, the router:
 ### [Easy] No phone, no credit card required
 
 | # | Provider | Free Tier | Env Variable |
-|---|----------|-----------|-------------|
+|---|---|----------|-----------|-------------|
 | 1 | OpenRouter | 20 req/min, 50 req/day free models | `OPENROUTER_API_KEY` |
 | 2 | Groq | 1000-14000 req/day per model | `GROQ_API_KEY` |
 | 3 | Cerebras | 30 req/min, 900 req/hr | `CEREBRAS_API_KEY` |
@@ -135,16 +140,16 @@ When `model` is `"auto"` or omitted, the router:
 ### [Phone] Phone verification required
 
 | # | Provider | Free Tier | Env Variable |
-|---|----------|-----------|-------------|
+|---|---|----------|-----------|-------------|
 | 1 | NVIDIA NIM | 40 req/min | `NVIDIA_API_KEY` |
 | 2 | Mistral La Plateforme | 1 req/s, 1B tokens/mo | `MISTRAL_API_KEY` |
 | 3 | Mistral Codestral | 30 req/min, 2000 req/day | `CODESTRAL_API_KEY` |
 | 4 | NLP Cloud | $15 free credits | `NLP_CLOUD_API_KEY` |
 
-### [Credits] Free trial credits
+### [Credits] No free tier
 
 | # | Provider | Free Tier | Env Variable |
-|---|----------|-----------|-------------|
+|---|---|----------|-----------|-------------|
 | 1 | **xAI** | $25 credits + $150/mo data sharing | `XAI_API_KEY` |
 | 2 | Nebius AI | $1 free credits | `NEBIUS_API_KEY` |
 | 3 | Novita AI | $0.50 free credits | `NOVITA_API_KEY` |
@@ -162,7 +167,7 @@ When `model` is `"auto"` or omitted, the router:
 ### [Paid] No free tier
 
 | # | Provider | Env Variable |
-|---|----------|-------------|
+|---|---|----------|-------------|
 | 1 | DigitalOcean GPU | `DIGITALOCEAN_API_KEY` |
 | 2 | OVHcloud AI Endpoints | `OVHCLOUD_API_KEY` |
 | 3 | STACKIT AI | `STACKIT_API_KEY` |
@@ -175,7 +180,7 @@ When `model` is `"auto"` or omitted, the router:
 ### Custom API Providers (4)
 
 | # | Provider | Free Tier | Env Variable |
-|---|----------|-----------|-------------|
+|---|---|----------|-----------|-------------|
 | 1 | Google Gemini | 20-1500 req/day per model | `GEMINI_API_KEY` |
 | 2 | Cloudflare Workers AI | 10k neurons/day | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
 | 3 | Cohere | 20 req/min, 1000 req/mo | `COHERE_API_KEY` |
@@ -208,10 +213,11 @@ The server includes two web pages:
 
 ### `/admin` — Live Dashboard
 - Provider stats (requests, errors, tokens, latency)
-- Rate-limit status per provider
+- Rate-limit and circuit breaker status per provider
 - Cache hit/miss stats
 - Model list (first 100)
 - Auto-refreshes every 3 seconds
+- One-click config reload
 
 ### `/settings` — Setup Panel
 - Edit all provider API keys (password-masked inputs)
@@ -225,8 +231,9 @@ The server includes two web pages:
 |--------|------|-------------|
 | `GET` | `/v1/models` | List all models across all providers |
 | `POST` | `/v1/chat/completions` | Chat completion (streaming + non-streaming) |
-| `GET` | `/v1/stats` | Provider stats JSON |
-| `GET` | `/health` | Health check JSON |
+| `GET` | `/v1/stats` | Provider stats + queue stats JSON |
+| `GET` | `/health` | Deep health check (per-provider ping) |
+| `POST` | `/reload` | Hot reload config without restart |
 | `GET` | `/admin` | Live dashboard (HTML) |
 | `GET` | `/settings` | Setup panel (HTML) |
 | `GET` | `/settings/api` | Current config JSON (for settings panel) |
@@ -317,7 +324,7 @@ If a provider rate-limits (429), errors (5xx), or times out, the router automati
 Send `model: "auto"` (or omit the `model` field entirely) and the router picks the best available model automatically:
 - Walks providers in priority order
 - On each provider, tries every model in API order
-- Each model gets 6 retries with realistic backoff (2s → 5s → 10s → 20s → 40s → 60s)
+- Each model gets 6 retries with smart backoff (uses provider's `Retry-After` if available, else 5s → 10s → 20s → 40s → 60s → 120s)
 - Only moves to next provider after ALL models on current provider fail
 - Responses include `_auto_provider` and `_auto_model` fields
 - Streaming responses include an `auto_routed` SSE prefix event
@@ -334,6 +341,19 @@ If **all providers** fail for the requested model, the router searches for **sim
 
 ### Streaming Support
 Pass `"stream": true` in your `/v1/chat/completions` request. The router streams Server-Sent Events chunks in real-time. If the streaming provider fails (detected on first chunk), the router falls back to the next provider automatically.
+
+### Circuit Breaker
+Each provider gets an independent circuit breaker:
+- After 5 consecutive failures, the circuit **opens** and stops sending requests
+- After 60 seconds, it enters **half-open** mode and tests with limited traffic
+- On success, the circuit **closes** and normal operation resumes
+- Prevents overwhelming dead APIs, reducing waste of free-tier quota
+
+### Concurrency Control
+Each provider has a semaphore limiting max concurrent requests (default 10). Prevents thundering-herd against rate-limited free APIs.
+
+### Request Queue with Backpressure
+When all providers are rate-limited or circuits are open, requests are queued instead of failing immediately. Configurable max queue size (default 100). If queue is full, returns a clear error telling the client to retry later.
 
 ### Load Balancing Strategies
 Set `strategy` in config.yml:
@@ -375,6 +395,9 @@ plugins:
     base_url: "https://my-internal-llm/v1"
 ```
 
+### Hot Reload
+Edit `~/.config/unified-router/config.yml` and changes are detected automatically within 5 seconds. Or POST to `/reload` to trigger manually. No restart needed.
+
 ## Architecture
 
 ```
@@ -386,12 +409,15 @@ plugins:
                     │  /admin  (dashboard)                │     │  DeepSeek        │
                     │  /settings  (setup panel)           │     │  Gemini          │
                     │  /health                            │     │  xAI             │
-                    │                                     │     │  Cohere          │
-                    │  Router → Provider A → 429?         │     │  Cloudflare      │
-                    │         → Provider B → 200! ✓       │     │  +36 more        │
+                    │  /reload                            │     │  Cohere          │
+                    │                                     │     │  Cloudflare      │
+                    │  Router → Provider A → 429?         │     │  +36 more        │
+                    │         → Provider B → 200! ✓       │     │                  │
                     │         → All fail? → Model fallback │     │                  │
                     │                                     │     │                  │
                     │  44 providers in registry.yaml       │     │                  │
+                    │  Circuit breakers + Queue + CB +    │     │                  │
+                    │  Real retry-after + Observability   │     │                  │
                     └─────────────────────────────────────┘     └──────────────────┘
 ```
 
@@ -419,6 +445,13 @@ unified-router init
 unified-router start
 ```
 
+### Testing
+
+```bash
+pip install pytest pytest-asyncio
+PYTHONPATH=src pytest tests/ -v
+```
+
 ## Roadmap
 
 - [x] Auto-discover models from each provider's /v1/models
@@ -435,6 +468,13 @@ unified-router start
 - [x] Web settings panel at /settings
 - [x] Health endpoint + CORS middleware
 - [x] .env file support
+- [x] Circuit breaker per provider
+- [x] Real retry-after header handling
+- [x] Concurrency control (semaphores)
+- [x] Request queue with backpressure
+- [x] Structured observability (tracing, logging)
+- [x] Input validation (Pydantic)
+- [x] Hot reload
 - [ ] Prompt template optimization per provider
 - [ ] PyPI release
 
