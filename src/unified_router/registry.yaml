@@ -2,7 +2,12 @@
 # OpenAI-compatible providers share ONE handler class.
 # Custom-API providers each have their own adapter file.
 #
-# Adding a new OpenAI-compatible provider = add 6 lines here, no code.
+# Type: free = always free, no phone/card needed
+#       phone = requires phone verification
+#       credits = trial credits or free tier with card
+#       paid = paid service
+#
+# Adding a new OpenAI-compatible provider = add 6-8 lines here, no code.
 
 openai_compatible:
   openrouter:
@@ -11,6 +16,7 @@ openai_compatible:
     env_key: "OPENROUTER_API_KEY"
     signup_url: "https://openrouter.ai/settings/keys"
     free_tier: "20 req/min, 50 req/day (free models)"
+    type: free
 
   groq:
     name: "Groq"
@@ -18,6 +24,15 @@ openai_compatible:
     env_key: "GROQ_API_KEY"
     signup_url: "https://console.groq.com/keys"
     free_tier: "1000-14000 req/day per model"
+    type: free
+
+  opencode_zen:
+    name: "OpenCode Zen"
+    base_url: "https://opencode.ai/zen/v1"
+    env_key: "OPENCODE_API_KEY"
+    signup_url: "https://opencode.ai/auth"
+    free_tier: "Free models: Big Pickle, DeepSeek V4 Flash Free, MiMo V2.5, Nemotron 3 Ultra"
+    type: free
 
   cerebras:
     name: "Cerebras"
@@ -25,6 +40,7 @@ openai_compatible:
     env_key: "CEREBRAS_API_KEY"
     signup_url: "https://inference.cerebras.ai/"
     free_tier: "30 req/min, 900 req/hr"
+    type: free
 
   nvidia:
     name: "NVIDIA NIM"
@@ -32,6 +48,7 @@ openai_compatible:
     env_key: "NVIDIA_API_KEY"
     signup_url: "https://build.nvidia.com"
     free_tier: "40 req/min (phone verify)"
+    type: phone
 
   mistral:
     name: "Mistral La Plateforme"
@@ -39,6 +56,7 @@ openai_compatible:
     env_key: "MISTRAL_API_KEY"
     signup_url: "https://console.mistral.ai/api-keys/"
     free_tier: "1 req/s, 1B tokens/mo (opt-in training)"
+    type: phone
 
   codestral:
     name: "Mistral Codestral"
@@ -46,6 +64,7 @@ openai_compatible:
     env_key: "CODESTRAL_API_KEY"
     signup_url: "https://codestral.mistral.ai/"
     free_tier: "30 req/min, 2000 req/day"
+    type: phone
 
   deepseek:
     name: "DeepSeek"
@@ -53,6 +72,15 @@ openai_compatible:
     env_key: "DEEPSEEK_API_KEY"
     signup_url: "https://platform.deepseek.com/api_keys"
     free_tier: "Paid (very cheap)"
+    type: paid
+
+  xai:
+    name: "xAI Grok"
+    base_url: "https://api.x.ai/v1"
+    env_key: "XAI_API_KEY"
+    signup_url: "https://console.x.ai/"
+    free_tier: "$25 credits + $150/mo data sharing"
+    type: credits
 
   together:
     name: "Together AI"
@@ -60,6 +88,7 @@ openai_compatible:
     env_key: "TOGETHER_API_KEY"
     signup_url: "https://api.together.xyz/settings/api-keys"
     free_tier: "$1 trial credits"
+    type: credits
 
   fireworks:
     name: "Fireworks AI"
@@ -67,6 +96,7 @@ openai_compatible:
     env_key: "FIREWORKS_API_KEY"
     signup_url: "https://fireworks.ai/account/api-keys"
     free_tier: "$1 free credits"
+    type: credits
 
   deepinfra:
     name: "Deep Infra"
@@ -74,6 +104,7 @@ openai_compatible:
     env_key: "DEEPINFRA_API_KEY"
     signup_url: "https://deepinfra.com/dash"
     free_tier: "Pay-as-you-go (cheap)"
+    type: paid
 
   github_models:
     name: "GitHub Models"
@@ -82,6 +113,7 @@ openai_compatible:
     alt_env_keys: ["GITHUB_API_KEY"]
     signup_url: "https://github.com/settings/tokens"
     free_tier: "Free with GitHub Copilot (any tier)"
+    type: free
 
   ai302:
     name: "302.AI"
@@ -89,6 +121,7 @@ openai_compatible:
     env_key: "AI302_API_KEY"
     signup_url: "https://302.ai/"
     free_tier: "Free tier available"
+    type: credits
 
   nebius:
     name: "Nebius AI"
@@ -96,6 +129,7 @@ openai_compatible:
     env_key: "NEBIUS_API_KEY"
     signup_url: "https://tokenfactory.nebius.com/"
     free_tier: "$1 free credits"
+    type: credits
 
   novita:
     name: "Novita AI"
@@ -103,6 +137,7 @@ openai_compatible:
     env_key: "NOVITA_API_KEY"
     signup_url: "https://novita.ai/"
     free_tier: "$0.5 free credits (1yr)"
+    type: credits
 
   hyperbolic:
     name: "Hyperbolic"
@@ -110,6 +145,7 @@ openai_compatible:
     env_key: "HYPERBOLIC_API_KEY"
     signup_url: "https://app.hyperbolic.ai/"
     free_tier: "$1 free credits"
+    type: credits
 
   sambanova:
     name: "SambaNova Cloud"
@@ -117,6 +153,7 @@ openai_compatible:
     env_key: "SAMBANOVA_API_KEY"
     signup_url: "https://cloud.sambanova.ai/"
     free_tier: "$5 free credits (3mo)"
+    type: credits
 
   scaleway:
     name: "Scaleway AI"
@@ -124,6 +161,7 @@ openai_compatible:
     env_key: "SCALEWAY_API_KEY"
     signup_url: "https://console.scaleway.com/generative-api/models"
     free_tier: "1M free tokens"
+    type: credits
 
   venice:
     name: "Venice AI"
@@ -131,6 +169,7 @@ openai_compatible:
     env_key: "VENICE_API_KEY"
     signup_url: "https://venice.ai/"
     free_tier: "Free tier available"
+    type: free
 
   baseten:
     name: "Baseten"
@@ -138,6 +177,7 @@ openai_compatible:
     env_key: "BASETEN_API_KEY"
     signup_url: "https://app.baseten.co/"
     free_tier: "$30 free credits"
+    type: credits
 
   gmi_cloud:
     name: "GMI Cloud"
@@ -145,6 +185,7 @@ openai_compatible:
     env_key: "GMI_CLOUD_API_KEY"
     signup_url: "https://console.gmicloud.ai/"
     free_tier: "Free tier available"
+    type: free
 
   io_net:
     name: "IO.NET"
@@ -152,6 +193,7 @@ openai_compatible:
     env_key: "IO_NET_API_KEY"
     signup_url: "https://ai.io.net/"
     free_tier: "Free tier available (17 models)"
+    type: free
 
   cortecs:
     name: "Cortecs AI"
@@ -159,6 +201,7 @@ openai_compatible:
     env_key: "CORTECS_API_KEY"
     signup_url: "https://cortecs.ai/"
     free_tier: "Free tier available"
+    type: free
 
   frogbot:
     name: "FrogBot"
@@ -166,6 +209,7 @@ openai_compatible:
     env_key: "FROGBOT_API_KEY"
     signup_url: "https://app.frogbot.ai/"
     free_tier: "Free tier available"
+    type: free
 
   minimax:
     name: "MiniMax AI"
@@ -173,6 +217,7 @@ openai_compatible:
     env_key: "MINIMAX_API_KEY"
     signup_url: "https://platform.minimax.io/"
     free_tier: "Free tier available"
+    type: free
 
   moonshot:
     name: "Moonshot AI"
@@ -180,6 +225,7 @@ openai_compatible:
     env_key: "MOONSHOT_API_KEY"
     signup_url: "https://platform.moonshot.ai/"
     free_tier: "Free tier available (Kimi K2)"
+    type: free
 
   ai21:
     name: "AI21 Labs"
@@ -187,6 +233,7 @@ openai_compatible:
     env_key: "AI21_API_KEY"
     signup_url: "https://studio.ai21.com/"
     free_tier: "$10 free credits (3mo)"
+    type: credits
 
   upstage:
     name: "Upstage AI"
@@ -194,6 +241,7 @@ openai_compatible:
     env_key: "UPSTAGE_API_KEY"
     signup_url: "https://console.upstage.ai/"
     free_tier: "$10 free credits (3mo)"
+    type: credits
 
   nlp_cloud:
     name: "NLP Cloud"
@@ -201,6 +249,7 @@ openai_compatible:
     env_key: "NLP_CLOUD_API_KEY"
     signup_url: "https://nlpcloud.com/"
     free_tier: "$15 free credits (phone verify)"
+    type: phone
 
   alibaba:
     name: "Alibaba Cloud Model Studio"
@@ -208,6 +257,7 @@ openai_compatible:
     env_key: "ALIBABA_API_KEY"
     signup_url: "https://bailian.console.alibabacloud.com/"
     free_tier: "1M free tokens/model"
+    type: credits
 
   digitalocean:
     name: "DigitalOcean GPU"
@@ -215,6 +265,7 @@ openai_compatible:
     env_key: "DIGITALOCEAN_API_KEY"
     signup_url: "https://cloud.digitalocean.com/"
     free_tier: "Free tier available"
+    type: credits
 
   ovhcloud:
     name: "OVHcloud AI Endpoints"
@@ -222,6 +273,7 @@ openai_compatible:
     env_key: "OVHCLOUD_API_KEY"
     signup_url: "https://endpoints.ai.cloud.ovh.net/"
     free_tier: "Free tier available"
+    type: free
 
   stackit:
     name: "STACKIT AI"
@@ -229,6 +281,7 @@ openai_compatible:
     env_key: "STACKIT_API_KEY"
     signup_url: "https://stackit.cloud/"
     free_tier: "Free tier available"
+    type: free
 
   sap_ai:
     name: "SAP AI Core"
@@ -236,6 +289,7 @@ openai_compatible:
     env_key: "SAP_AI_API_KEY"
     signup_url: "https://ai.sap.com/"
     free_tier: "Free tier available"
+    type: free
 
   snowflake:
     name: "Snowflake Cortex AI"
@@ -243,6 +297,7 @@ openai_compatible:
     env_key: "SNOWFLAKE_API_KEY"
     signup_url: "https://snowflake.com/"
     free_tier: "Free tier available"
+    type: free
 
   ollama_cloud:
     name: "Ollama Cloud"
@@ -250,6 +305,7 @@ openai_compatible:
     env_key: "OLLAMA_CLOUD_API_KEY"
     signup_url: "https://ollama.com/"
     free_tier: "Free tier available"
+    type: free
 
   vercel_gateway:
     name: "Vercel AI Gateway"
@@ -257,6 +313,7 @@ openai_compatible:
     env_key: "VERCEL_AI_API_KEY"
     signup_url: "https://vercel.com/docs/ai-gateway"
     free_tier: "$5/mo free tier"
+    type: credits
 
   modal:
     name: "Modal"
@@ -264,6 +321,7 @@ openai_compatible:
     env_key: "MODAL_API_KEY"
     signup_url: "https://modal.com/"
     free_tier: "$5/mo free credits, $30/mo w/ payment"
+    type: credits
 
   inference_net:
     name: "Inference.net"
@@ -271,6 +329,7 @@ openai_compatible:
     env_key: "INFERENCE_NET_API_KEY"
     signup_url: "https://inference.net/"
     free_tier: "$1 free credits, $25 w/ survey"
+    type: credits
 
 custom:
   gemini:
@@ -281,6 +340,7 @@ custom:
     alt_env_keys: ["GOOGLE_API_KEY"]
     signup_url: "https://aistudio.google.com/app/apikey"
     free_tier: "20-1500 req/day per model"
+    type: free
 
   cloudflare:
     name: "Cloudflare Workers AI"
@@ -290,6 +350,7 @@ custom:
     env_account_id: "CLOUDFLARE_ACCOUNT_ID"
     signup_url: "https://dash.cloudflare.com/?to=/:account/workers/ai"
     free_tier: "10k neurons/day"
+    type: free
 
   cohere:
     name: "Cohere"
@@ -298,6 +359,7 @@ custom:
     env_key: "COHERE_API_KEY"
     signup_url: "https://dashboard.cohere.com/api-keys"
     free_tier: "20 req/min, 1000 req/mo"
+    type: free
 
   huggingface:
     name: "HuggingFace Inference"
@@ -307,3 +369,4 @@ custom:
     alt_env_keys: ["HUGGINGFACE_TOKEN"]
     signup_url: "https://huggingface.co/settings/tokens"
     free_tier: "$0.10/mo credits"
+    type: free

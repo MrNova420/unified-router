@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import webbrowser
 from pathlib import Path
 
 import typer
@@ -10,21 +11,26 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.columns import Columns
 
 from .config import (
     load_config,
     CONFIG_DIR,
     CONFIG_FILE,
     DEFAULT_CONFIG,
+    DEFAULT_PRIORITY,
     detect_api_key,
     detect_account_id,
     get_provider_info,
+    get_provider_type,
+    PROVIDER_TYPE_BADGES,
+    PROVIDER_TYPE_COLORS,
 )
 from .registry import load_registry
 
 app = typer.Typer(
     name="unified-router",
-    help="Unified LLM API router - route requests across all free LLM providers",
+    help="Unified LLM API router - route requests across 44+ free LLM providers worldwide",
     no_args_is_help=True,
 )
 console = Console()
@@ -55,10 +61,87 @@ def start(
     _start_server(host, port, log_level)
 
 
+def _open_browser(url: str):
+    try:
+        webbrowser.open(url)
+        console.print(f"  [dim]Opened: {url}[/dim]")
+    except Exception:
+        console.print(f"  [dim]Signup URL: {url}[/dim]")
+
+
+def _print_provider_group(title: str, providers: list, style: str, show_type: bool = True):
+    if not providers:
+        return
+    console.print(f"\n[bold {style}]  {title}[/bold {style}]")
+    for name, reg in providers:
+        badge = PROVIDER_TYPE_BADGES.get(get_provider_type(name), "")
+        display = reg.get("name", name)
+        free_tier = reg.get("free_tier", "")
+        signup = reg.get("signup_url", "")
+        label = f"    {badge} {display}"
+        if free_tier:
+            label += f"  [dim]{free_tier}[/dim]"
+        console.print(label)
+
+
+def _group_providers(registry: dict) -> dict[str, list]:
+    groups: dict[str, list] = {"free": [], "phone": [], "credits": [], "paid": []}
+
+    for section in ("openai_compatible", "custom"):
+        for name, reg in registry.get(section, {}).items():
+            ptype = reg.get("type", "free")
+            if ptype not in groups:
+                groups[ptype] = []
+            groups[ptype].append((name, reg))
+
+    return groups
+
+
+def _run_health_check():
+    async def _check():
+        config = load_config()
+        from .registry import build_providers
+        providers = build_providers(config)
+
+        if not providers:
+            console.print("[red]No providers configured to test.[/red]")
+            return
+
+        import time
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            table = Table(title="Provider Health Check")
+            table.add_column("Provider", style="cyan")
+            table.add_column("Status", style="green")
+            table.add_column("Models", style="white")
+            table.add_column("Latency", style="white")
+
+            for name, prov in providers.items():
+                info = get_provider_info(name)
+                display = info.get("name", name)
+                start = time.time()
+                try:
+                    models = await prov.fetch_models(client)
+                    latency = f"{(time.time() - start) * 1000:.0f}ms"
+                    model_count = str(len(models))
+                    status_str = "[green][OK] Online[/green]"
+                except Exception as e:
+                    latency = "-"
+                    model_count = "-"
+                    status_str = f"[red][ERR] {e!s}[/red]"
+                table.add_row(display, status_str, model_count, latency)
+
+            console.print(table)
+
+    asyncio.run(_check())
+
+
 @app.command()
 def init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config"),
     auto: bool = typer.Option(False, "--auto", "-a", help="Only use env-detected keys, skip interactive prompts"),
+    guide: bool = typer.Option(False, "--guide", "-g", help="Walk through signing up for top providers"),
 ):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -69,8 +152,8 @@ def init(
 
     console.print(Panel.fit(
         "[bold cyan]Unified Router - Setup Wizard[/bold cyan]\n"
-        "Connect all your free LLM providers. We'll auto-detect any keys already in your environment.\n"
-        "Press Enter to skip any provider you don't want to configure.",
+        "Connect your free LLM providers. We'll auto-detect keys from your environment.\n"
+        "[dim]Press Enter to skip any provider. Press 'o' to open signup URL in browser.[/dim]",
         border_style="cyan",
     ))
 
@@ -79,85 +162,161 @@ def init(
     config["priority"] = list(DEFAULT_CONFIG["priority"])
     config["providers"] = {k: dict(v) for k, v in DEFAULT_CONFIG["providers"].items()}
 
-    configured_count = 0
+    if guide:
+        console.print("\n[bold yellow]Guide Mode[/bold yellow] - Let's walk through getting keys for the top providers:")
+        console.print("  We'll open signup pages so you can create accounts and generate API keys.")
+        input("  Press Enter to start...")
+
+    groups = _group_providers(registry)
+    group_titles = {
+        "free": "[Easy] Always Free - No phone, no credit card required",
+        "phone": "[Phone] Phone Verify Required",
+        "credits": "[Credits] Free Trials & Credits",
+        "paid": "[Paid] Paid Services (no free tier)",
+    }
+    group_styles = {
+        "free": "green",
+        "phone": "yellow",
+        "credits": "blue",
+        "paid": "dim",
+    }
+
     auto_detected_count = 0
+    configured_count = 0
+    config_written = False
 
-    # Collect all providers in priority order
-    all_providers: list[tuple[str, dict, str]] = []
-    for section_name, section_key in [("openai_compatible", "OpenAI Compatible"), ("custom", "Custom API")]:
-        for name, reg in registry.get(section_name, {}).items():
-            all_providers.append((name, reg, section_key))
-
-    for name, reg, section_key in all_providers:
-        display_name = reg.get("name", name)
-        signup_url = reg.get("signup_url", "")
-
-        pcfg = config["providers"].get(name, {})
-        detected = detect_api_key(pcfg)
-        current_key = pcfg.get("api_key", "") or detected or ""
-
-        needs_account = bool(reg.get("env_account_id"))
-
-        if needs_account:
-            current_acct = detect_account_id(pcfg) or ""
-
-        if current_key and needs_account and current_acct:
-            config["providers"][name]["api_key"] = current_key
-            config["providers"][name]["account_id"] = current_acct
-            auto_detected_count += 1
-            configured_count += 1
+    for group_key in ("free", "phone", "credits", "paid"):
+        group = groups.get(group_key, [])
+        if not group:
             continue
+        title = group_titles.get(group_key, group_key)
+        style = group_styles.get(group_key, "white")
+        console.print(f"\n[bold {style}]  {title}[/bold {style}]")
 
-        if current_key and not needs_account:
-            config["providers"][name]["api_key"] = current_key
-            auto_detected_count += 1
-            configured_count += 1
-            continue
+        for name, reg in group:
+            display_name = reg.get("name", name)
+            signup_url = reg.get("signup_url", "")
+            badge = PROVIDER_TYPE_BADGES.get(group_key, "")
 
-        if auto:
-            continue
+            pcfg = config["providers"].get(name, {})
+            needs_account = bool(reg.get("env_account_id"))
+            detected = detect_api_key(pcfg)
+            current_key = pcfg.get("api_key", "") or detected or ""
 
-        console.print()
-        console.print(f"[bold]{display_name}[/bold] [dim]({section_key})[/dim]")
-
-        if needs_account:
-            current_acct_val = detect_account_id(pcfg) or ""
-            if not current_acct_val:
-                acct_prompt = f"  Account ID (required): "
-            else:
-                acct_prompt = f"  Account ID [{current_acct_val}]: "
-            acct = input(acct_prompt).strip()
-            if not acct and current_acct_val:
-                acct = current_acct_val
-            if acct:
-                config["providers"][name]["account_id"] = acct
-            else:
-                console.print(f"  [dim][--] {display_name} skipped (no account ID)[/dim]")
+            if auto:
+                if current_key:
+                    config["providers"][name]["api_key"] = current_key
+                    auto_detected_count += 1
+                    configured_count += 1
                 continue
 
-        if signup_url:
-            console.print(f"  Get key at: [blue]{signup_url}[/blue]")
+            if needs_account:
+                current_acct = detect_account_id(pcfg) or ""
 
-        key = input(f"  API key (or press Enter to skip): ").strip()
+            if current_key and (not needs_account or current_acct):
+                if not config["providers"][name].get("api_key"):
+                    config["providers"][name]["api_key"] = current_key
+                auto_detected_count += 1
+                configured_count += 1
+                continue
 
-        if key:
-            config["providers"][name]["api_key"] = key
-            configured_count += 1
-            console.print(f"  [green][OK] {display_name} configured[/green]")
-        else:
-            console.print(f"  [dim][--] {display_name} skipped[/dim]")
+            if needs_account and guide:
+                console.print(f"\n  [bold]{display_name}[/bold] {badge}")
+                console.print(f"  Get API token at: [blue]{signup_url}[/blue]")
+                console.print(f"  Also need your Account ID from the Cloudflare dashboard.")
+                answer = input("  Open signup page? [Y/n/o]: ").strip().lower()
+                if answer == "o" or answer == "y" or answer == "":
+                    _open_browser(signup_url)
+
+                current_acct_val = detect_account_id(pcfg) or ""
+                if not current_acct_val:
+                    acct_prompt = f"  Account ID (required, press Enter to skip): "
+                else:
+                    acct_prompt = f"  Account ID [{current_acct_val}]: "
+                acct = input(acct_prompt).strip()
+                if not acct and current_acct_val:
+                    acct = current_acct_val
+                if acct:
+                    config["providers"][name]["account_id"] = acct
+                    console.print(f"  [dim]Account ID set[/dim]")
+                else:
+                    console.print(f"  [dim][--] {display_name} skipped (no account ID)[/dim]")
+                    continue
+
+                current_k = detect_api_key(pcfg) or ""
+                key_hint = f"  API key (or press Enter to skip): "
+                key = input(key_hint).strip()
+                if not key and current_k:
+                    key = current_k
+                if key:
+                    config["providers"][name]["api_key"] = key
+                    configured_count += 1
+                    console.print(f"  [green]  [OK] {display_name} configured[/green]")
+                else:
+                    console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
+
+            elif guide:
+                console.print(f"\n  [bold]{display_name}[/bold] {badge}")
+                free_tier = reg.get("free_tier", "")
+                if free_tier:
+                    console.print(f"  [dim]Free tier: {free_tier}[/dim]")
+                console.print(f"  Signup: [blue]{signup_url}[/blue]")
+                answer = input("  Open signup page? [Y/n]: ").strip().lower()
+                if answer == "y" or answer == "":
+                    _open_browser(signup_url)
+                console.print(f"  [dim]After signing up, run 'unified-router init' again to add your key.[/dim]")
+                input("  Press Enter to continue...")
+
+            else:
+                if needs_account:
+                    current_acct_val = detect_account_id(pcfg) or ""
+                    if not current_acct_val:
+                        acct_prompt = f"  Account ID (required): "
+                    else:
+                        acct_prompt = f"  Account ID [{current_acct_val}]: "
+                    acct = input(acct_prompt).strip()
+                    if not acct and current_acct_val:
+                        acct = current_acct_val
+                    if acct:
+                        config["providers"][name]["account_id"] = acct
+                    else:
+                        console.print(f"  [dim]  [--] {display_name} skipped (no account ID)[/dim]")
+                        continue
+
+                if signup_url:
+                    console.print(f"  Get key at: [blue]{signup_url}[/blue]")
+
+                key = input(f"  {badge} {display_name} - API key (or press Enter to skip, 'o' to open signup): ").strip()
+                if key.lower() == "o":
+                    _open_browser(signup_url)
+                    key = input(f"  {badge} {display_name} - API key (or press Enter to skip): ").strip()
+                if key:
+                    config["providers"][name]["api_key"] = key
+                    configured_count += 1
+                    console.print(f"  [green]  [OK] {display_name} configured[/green]")
+                else:
+                    if needs_account:
+                        extra = " or account ID"
+                    console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
 
     import yaml
     CONFIG_FILE.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    config_written = True
 
     console.print()
     console.print(Panel.fit(
         f"[bold green][OK] Setup complete![/bold green]\n"
         f"Config saved to: {CONFIG_FILE}\n"
-        f"Providers configured: {configured_count} ({auto_detected_count} auto-detected)\n\n"
-        "Run [bold]unified-router start[/bold] to start the server.",
+        f"Providers configured: {configured_count} ({auto_detected_count} auto-detected)\n"
+        f"Providers skipped: {len(config['providers']) - configured_count}",
         border_style="green",
     ))
+
+    if configured_count > 0:
+        console.print()
+        test_choice = input("  Test your configured providers now? [Y/n]: ").strip().lower()
+        if test_choice == "y" or test_choice == "":
+            _run_health_check()
 
     console.print()
     console.print("[bold]To use with OpenCode, add this to your opencode.jsonc:[/bold]")
@@ -179,23 +338,21 @@ def init(
 @app.command()
 def status():
     config = load_config()
+    registry = load_registry()
 
     table = Table(title="Provider Status")
     table.add_column("Provider", style="cyan")
-    table.add_column("Category", style="dim")
-    table.add_column("API Key", style="white")
+    table.add_column("Type", style="white")
+    table.add_column("Key", style="white")
     table.add_column("Status", style="green")
-
-    registry = load_registry()
 
     for name in config.get("priority", []):
         pcfg = config["providers"].get(name, {})
         info = get_provider_info(name)
         display = info.get("name", name)
-
-        section = "OpenAI"
-        if any(name in registry.get("custom", {}) for _ in [1]):
-            section = "Custom"
+        ptype = get_provider_type(name)
+        badge = PROVIDER_TYPE_BADGES.get(ptype, "")
+        badge_color = PROVIDER_TYPE_COLORS.get(ptype, "white")
 
         key = pcfg.get("api_key", "")
         if key:
@@ -205,19 +362,22 @@ def status():
         else:
             key_cell = "[dim]none[/dim]"
             status_cell = "[dim]Not configured[/dim]"
-        table.add_row(display, section, key_cell, status_cell)
+
+        table.add_row(f"{badge} {display}", f"[{badge_color}]{ptype}[/{badge_color}]", key_cell, status_cell)
 
     console.print(table)
 
     server = config.get("server", {})
     console.print(f"\n[bold]Server:[/bold] http://{server.get('host', '127.0.0.1')}:{server.get('port', 3333)}")
     console.print(f"[bold]Config:[/bold] {CONFIG_FILE}")
+    total = len(config.get("priority", []))
+    configured = sum(1 for p in config.get("providers", {}).values() if p.get("api_key"))
+    console.print(f"[bold]{configured}/{total}[/bold] providers configured")
 
 
 @app.command()
 def config():
     cfg = load_config()
-    registry = load_registry()
 
     console.print("[bold]Server Configuration:[/bold]")
     server = cfg.get("server", {})
@@ -225,13 +385,15 @@ def config():
     console.print(f"  Port: {server.get('port', 3333)}")
     console.print(f"  Log level: {server.get('log_level', 'info')}")
 
-    console.print(f"\n[bold]Provider Priority Order ({len(cfg.get('priority', []))}):[/bold]")
+    console.print(f"\n[bold]Provider Priority ({len(cfg.get('priority', []))} total):[/bold]")
     for i, name in enumerate(cfg.get("priority", []), 1):
         info = get_provider_info(name)
         display = info.get("name", name)
+        ptype = get_provider_type(name)
+        badge = PROVIDER_TYPE_BADGES.get(ptype, "")
         pcfg = cfg["providers"].get(name, {})
-        status = "[CONFIGURED]" if pcfg.get("api_key") else "[NOT CONFIGURED]"
-        console.print(f"  {i:2d}. {display} {status}")
+        status = "[CONFIGURED]" if pcfg.get("api_key") else ""
+        console.print(f"  {i:2d}. {badge} {display} {status}")
 
     console.print(f"\n[bold]Config file:[/bold] {CONFIG_FILE}")
 
@@ -254,73 +416,102 @@ def config():
 @app.command()
 def providers():
     registry = load_registry()
-    config = load_config()
+    groups = _group_providers(registry)
+    group_titles = {
+        "free": "Always Free (no phone/card)",
+        "phone": "Phone Verify Required",
+        "credits": "Free Trials & Credits",
+        "paid": "Paid Services (no free tier)",
+    }
+    group_styles = {
+        "free": "green",
+        "phone": "yellow",
+        "credits": "blue",
+        "paid": "dim",
+    }
 
-    table = Table(title=f"All Providers ({len(config.get('priority', []))})")
-    table.add_column("#", style="dim")
-    table.add_column("Provider", style="cyan")
-    table.add_column("Type", style="dim")
-    table.add_column("Status", style="green")
-    table.add_column("Free Tier")
+    total = sum(len(g) for g in groups.values())
+    console.print(f"[bold]All Providers ({total})[/bold]\n")
 
-    for i, name in enumerate(config.get("priority", []), 1):
+    for group_key in ("free", "phone", "credits", "paid"):
+        group = groups.get(group_key, [])
+        if not group:
+            continue
+        title = group_titles.get(group_key, group_key)
+        style = group_styles.get(group_key, "white")
+        console.print(f"[bold {style}]  {title}[/bold {style}]")
+
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("", style="dim", width=4)
+        table.add_column("", style="cyan")
+        table.add_column("", style="dim", width=16)
+        table.add_column("", style="white")
+
+        for name, reg in group:
+            badge = PROVIDER_TYPE_BADGES.get(group_key, "")
+            display = reg.get("name", name)
+            free_tier = reg.get("free_tier", "")
+            signup = reg.get("signup_url", "")
+            table.add_row("", f"{badge} {display}", f"[dim]{free_tier[:30]}[/dim]" if free_tier else "", f"[dim]{signup}[/dim]")
+
+        console.print(table)
+
+    console.print(f"\n[bold]Suggested priority order:[/bold]")
+    for i, name in enumerate(DEFAULT_PRIORITY, 1):
         info = get_provider_info(name)
+        badge = PROVIDER_TYPE_BADGES.get(get_provider_type(name), "")
         display = info.get("name", name)
-        free_tier = info.get("free_tier", "")
-        section = "OpenAI"
-        for sname in ("openai_compatible",):
-            if name in registry.get(sname, {}):
-                section = "OpenAI Compatible"
-                break
-        if name in registry.get("custom", {}):
-            section = "Custom API"
-        pcfg = config["providers"].get(name, {})
-        status = "[green][OK][/green]" if pcfg.get("api_key") else "[dim][--][/dim]"
-        table.add_row(str(i), display, section, status, free_tier)
-
-    console.print(table)
-    console.print(f"\n[dim]Total: {len(config.get('priority', []))} providers registered[/dim]")
+        console.print(f"  {i:2d}. {badge} {display}")
 
 
 @app.command()
 def health():
-    async def _check():
-        config = load_config()
-        from .registry import build_providers
-        providers = build_providers(config)
+    _run_health_check()
 
-        if not providers:
-            console.print("[red]No providers configured. Run 'unified-router init' first.[/red]")
-            return
 
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
-            table = Table(title="Provider Health Check")
-            table.add_column("Provider", style="cyan")
-            table.add_column("Status", style="green")
-            table.add_column("Models", style="white")
-            table.add_column("Latency", style="white")
+@app.command()
+def guide():
+    console.print(Panel.fit(
+        "[bold cyan]Unified Router - Getting Started Guide[/bold cyan]\n"
+        "We'll help you sign up for the top free providers and get your API keys.\n"
+        "[dim]Press Enter to continue through each step.[/dim]",
+        border_style="cyan",
+    ))
 
-            for name, prov in providers.items():
-                import time
-                info = get_provider_info(name)
-                display = info.get("name", name)
+    registry = load_registry()
 
-                start = time.time()
-                try:
-                    models = await prov.fetch_models(client)
-                    latency = f"{(time.time() - start) * 1000:.0f}ms"
-                    model_count = str(len(models))
-                    status_str = "[green][OK] Online[/green]"
-                except Exception as e:
-                    latency = "-"
-                    model_count = "-"
-                    status_str = f"[red][ERR] {e!s}[/red]"
-                table.add_row(display, status_str, model_count, latency)
+    guide_providers = [
+        ("openrouter", "OpenRouter", "https://openrouter.ai/settings/keys",
+         "Has 20+ free models. No phone or credit card needed."),
+        ("groq", "Groq", "https://console.groq.com/keys",
+         "Fastest inference. Generous free tier. No phone or card needed."),
+        ("gemini", "Google Gemini", "https://aistudio.google.com/app/apikey",
+         "Google's models. Free tier: 20-1500 req/day per model."),
+        ("opencode_zen", "OpenCode Zen", "https://opencode.ai/auth",
+         "OpenCode's tested/verified models. Free models available."),
+        ("nvidia", "NVIDIA NIM", "https://build.nvidia.com",
+         "40 RPM no daily cap. Requires phone verification."),
+    ]
 
-            console.print(table)
+    for key, display, url, desc in guide_providers:
+        info = get_provider_info(key)
+        badge = PROVIDER_TYPE_BADGES.get(get_provider_type(key), "")
+        console.print(f"\n[bold cyan]{badge} {display}[/bold cyan]")
+        console.print(f"  {desc}")
+        console.print(f"  Signup URL: [blue]{url}[/blue]")
+        answer = input("  Open signup page? [Y/n]: ").strip().lower()
+        if answer == "y" or answer == "":
+            _open_browser(url)
+        input("  Press Enter for next provider...")
 
-    asyncio.run(_check())
+    console.print()
+    console.print(Panel.fit(
+        "[bold green]Once you have your API keys, run:[/bold green]\n"
+        "  unified-router init\n\n"
+        "The wizard will auto-detect any keys you've set as environment variables\n"
+        "and prompt you for the rest.",
+        border_style="green",
+    ))
 
 
 @app.command()

@@ -14,24 +14,64 @@ CONFIG_FILE = CONFIG_DIR / "config.yml"
 AUTH_FILE = Path.home() / ".local" / "share" / "opencode" / "auth.json"
 
 
+DEFAULT_PRIORITY = [
+    "openrouter",   # 1: most free models, no phone/card
+    "nvidia",       # 2: 40 RPM no daily cap, phone verify
+    "gemini",       # 3: Google's generous free tier
+    "opencode_zen", # 4: OpenCode's own free models
+    "xai",          # 5: Grok credits ($25 + $150/mo)
+    "groq",         # 6: fastest inference, generous limits
+    "cerebras",     # 7: fast inference, good limits
+    "deepseek",     # 8: very cheap paid models
+    "mistral",      # 9: 1B tokens/mo, phone verify
+    "codestral",    # 10: coding model, phone verify
+    "together",     # 11: $1 trial
+    "fireworks",    # 12: $1 trial
+    "deepinfra",    # 13: cheap paid
+    "github_models",# 14: free with copilot
+    "cohere",       # 15: 1000 req/mo, no phone
+    "huggingface",  # 16: $0.10/mo, no phone
+    "cloudflare",   # 17: 10k neurons/day
+    "ai302",        # 18
+    "nebius",       # 19
+    "novita",       # 20
+    "hyperbolic",   # 21
+    "sambanova",    # 22
+    "scaleway",     # 23
+    "venice",       # 24
+    "baseten",      # 25
+    "gmi_cloud",    # 26
+    "io_net",       # 27
+    "cortecs",      # 28
+    "frogbot",      # 29
+    "minimax",      # 30
+    "moonshot",     # 31
+    "ai21",         # 32
+    "upstage",      # 33
+    "nlp_cloud",    # 34
+    "alibaba",      # 35
+    "digitalocean", # 36
+    "ovhcloud",     # 37
+    "stackit",      # 38
+    "sap_ai",       # 39
+    "snowflake",    # 40
+    "ollama_cloud", # 41
+    "vercel_gateway", # 42
+    "modal",        # 43
+    "inference_net",# 44
+]
+
+
 def _build_default_config() -> dict[str, Any]:
     registry = load_registry()
-    priority: list[str] = []
     providers: dict[str, dict[str, Any]] = {}
 
-    for name, reg in registry.get("openai_compatible", {}).items():
-        priority.append(name)
-        entry: dict[str, Any] = {
-            "base_url": reg.get("base_url", ""),
-            "env_key": reg.get("env_key", ""),
-        }
-        if reg.get("alt_env_keys"):
-            entry["alt_env_keys"] = reg["alt_env_keys"]
-        providers[name] = entry
+    all_registered = {}
+    all_registered.update(registry.get("openai_compatible", {}))
+    all_registered.update(registry.get("custom", {}))
 
-    for name, reg in registry.get("custom", {}).items():
-        priority.append(name)
-        entry = {
+    for name, reg in all_registered.items():
+        entry: dict[str, Any] = {
             "base_url": reg.get("base_url", ""),
             "env_key": reg.get("env_key", ""),
         }
@@ -40,6 +80,11 @@ def _build_default_config() -> dict[str, Any]:
         if reg.get("env_account_id"):
             entry["env_account_id"] = reg["env_account_id"]
         providers[name] = entry
+
+    priority = [p for p in DEFAULT_PRIORITY if p in providers]
+    for name in providers:
+        if name not in priority:
+            priority.append(name)
 
     return {
         "server": {
@@ -62,6 +107,26 @@ def get_provider_info(name: str) -> dict[str, Any]:
         if reg:
             return reg
     return {}
+
+
+def get_provider_type(name: str) -> str:
+    info = get_provider_info(name)
+    return info.get("type", "free")
+
+
+PROVIDER_TYPE_BADGES = {
+    "free": "[Easy]",
+    "phone": "[Phone]",
+    "credits": "[Credits]",
+    "paid": "[Paid]",
+}
+
+PROVIDER_TYPE_COLORS = {
+    "free": "green",
+    "phone": "yellow",
+    "credits": "blue",
+    "paid": "dim",
+}
 
 
 def resolve_env(value: str) -> str:

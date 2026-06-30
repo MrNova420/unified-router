@@ -1,5 +1,5 @@
 # Unified Router Configuration
-# All 41+ providers are auto-discovered from registry.yaml.
+# All 44+ providers are auto-discovered from registry.yaml.
 # You only need to set API keys — everything else is automatic.
 
 server:
@@ -8,20 +8,22 @@ server:
   log_level: "info"
 
 # Priority order: router tries providers top to bottom on failure
-# Customize this list to your preference. Remove providers you don't use.
+# Top 6 are the most universally useful free providers.
 priority:
   - openrouter
+  - nvidia
+  - gemini
+  - opencode_zen
+  - xai
   - groq
   - cerebras
   - deepseek
+  - mistral
+  - codestral
   - together
   - fireworks
   - deepinfra
-  - mistral
-  - codestral
-  - nvidia
   - github_models
-  - gemini
   - cohere
   - huggingface
   - cloudflare
@@ -54,9 +56,7 @@ priority:
   - inference_net
 
 # Provider API keys — set these or use environment variables.
-# All standard env vars (OPENROUTER_API_KEY, GROQ_API_KEY, etc.) 
-# are detected automatically. You only need to specify keys here
-# if you want to override env vars or set keys directly.
+# All standard env vars detected automatically.
 providers:
   openrouter:
     api_key: "${OPENROUTER_API_KEY}"
@@ -64,14 +64,21 @@ providers:
   groq:
     api_key: "${GROQ_API_KEY}"
 
-  # cloudflare needs both api_key and account_id
+  opencode_zen:
+    api_key: "${OPENCODE_API_KEY}"
+
+  xai:
+    api_key: "${XAI_API_KEY}"
+
   cloudflare:
     api_key: "${CLOUDFLARE_API_TOKEN}"
     account_id: "${CLOUDFLARE_ACCOUNT_ID}"
 
-  # cohere, huggingface, etc — just add api_key as needed
   cohere:
     api_key: "${COHERE_API_KEY}"
 
   huggingface:
     api_key: "${HF_TOKEN}"
+
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
