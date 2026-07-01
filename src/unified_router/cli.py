@@ -126,6 +126,26 @@ def start(
     _start_server(host, port, log_level)
 
 
+@app.command()
+def stop():
+    pid_file = CONFIG_DIR / "router.pid"
+    if not pid_file.exists():
+        console.print("[yellow]Router is not running (no PID file found).[/yellow]")
+        return
+    
+    try:
+        pid = int(pid_file.read_text().strip())
+        import os
+        import signal
+        os.kill(pid, signal.SIGTERM)
+        console.print(f"[green]Sent stop signal to Unified Router (PID: {pid})[/green]")
+    except ProcessLookupError:
+        console.print("[yellow]Process not found. Cleaning up PID file.[/yellow]")
+        pid_file.unlink()
+    except Exception as e:
+        console.print(f"[red]Error stopping router: {e}[/red]")
+
+
 def _open_browser(url: str):
     try:
         webbrowser.open(url)

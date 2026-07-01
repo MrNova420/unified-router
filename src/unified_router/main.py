@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 from contextlib import asynccontextmanager
@@ -12,12 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
-from .config import load_config, CONFIG_DIR
-from .registry import build_providers
+from .config import load_config, CONFIG_DIR, CONFIG_FILE, get_provider_info, PROVIDER_TYPE_BADGES
+from .registry import build_providers, load_registry
 from .router import Router
 from .observability import new_trace, current_trace, setup_logging
 from .provider import ProviderError, RateLimitError, AuthError
 from .queue import RequestQueue
+from .usage_stats import get_usage_stats
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,10 @@ async def lifespan(app: FastAPI):
     global router_instance, _shutdown_event
     import asyncio
     _shutdown_event = asyncio.Event()
+    
+    # Write PID file
+    pid_file = CONFIG_DIR / "router.pid"
+    pid_file.write_text(str(os.getpid()))
 
     config = load_config()
     setup_logging(config.get("server", {}).get("log_level", "info"))
@@ -147,6 +153,12 @@ async def lifespan(app: FastAPI):
     yield
     _shutdown_event.set()
     watcher_task.cancel()
+    
+    # Remove PID file
+    pid_file = CONFIG_DIR / "router.pid"
+    if pid_file.exists():
+        pid_file.unlink()
+
     if request_queue:
         await request_queue.stop()
     if router_instance:
@@ -215,7 +227,8 @@ app = create_app()
 
 @app.get("/")
 async def root():
-    return RedirectResponse(url="/admin")
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(_page("dashboard", _LANDING_BODY))
 
 
 @app.get("/v1/models")
@@ -321,119 +334,536 @@ async def stats():
     return result
 
 
-_ADMIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Unified Router Admin</title>
-<style>
-body{font-family:system-ui;background:#0d1117;color:#c9d1d9;margin:0;padding:20px}
-h1{color:#58a6ff}.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin:12px 0}
-.pname{font-weight:bold;color:#79c0ff}.stat{color:#7ee787}
-.err{color:#ff7b72}.warn{color:#d29922}table{width:100%;border-collapse:collapse}
-td,th{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d}
-th{color:#8b949e}a{color:#58a6ff}
-</style></head><body>
-<h1>Unified Router Admin</h1>
-<div class="card"><a href="/docs">API Docs (Swagger)</a> | <a href="/v1/models">/v1/models</a> | <a href="/v1/stats">/v1/stats (JSON)</a> | <a href="/settings">/settings</a> | <a href="/reload" onclick="fetch('/reload',{method:'POST'}).then(r=>r.json()).then(d=>alert(JSON.stringify(d)));return false;">Reload Config</a></div>
-<div class="card" id="stats"></div>
-<div class="card" id="models"></div>
+_COMMON_HEAD = """<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={darkMode:'class',theme:{extend:{colors:{
+  brand:'#6366f1',surface:'#0f172a',card:'#1e293b',border:'#334155',
+  ok:'#22c55e',warn:'#f59e0b',err:'#ef4444',info:'#3b82f6'
+}}}}</script>
+<style>body{background:#0f172a}</style>"""
+
+_SIDEBAR = """<nav class="fixed left-0 top-0 h-full w-56 bg-card border-r border-border flex flex-col z-50">
+  <div class="p-5 border-b border-border">
+    <h1 class="text-xl font-bold text-white tracking-tight">Unified Router</h1>
+    <span class="text-xs text-gray-500">v2.0.0</span>
+  </div>
+  <div class="flex-1 py-4 space-y-1 px-3">
+    <a href="/" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium SIDEBAR_DASHBOARD_CLASS">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4"/></svg>
+      Dashboard
+    </a>
+    <a href="/admin" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium SIDEBAR_ADMIN_CLASS">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+      Providers
+    </a>
+    <a href="/analytics" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium SIDEBAR_ANALYTICS_CLASS">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v6a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+      Analytics
+    </a>
+    <a href="/settings" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium SIDEBAR_SETTINGS_CLASS">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.573-1.066z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+      Settings
+    </a>
+    <a href="/docs" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-surface">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+      API Docs
+    </a>
+  </div>
+  <div class="p-4 border-t border-border">
+    <button onclick="fetch('/reload',{method:'POST'}).then(r=>r.json()).then(d=>{showToast(d.status==='reloaded'?'Config reloaded':'Reload failed','ok')}).catch(()=>showToast('Reload failed','err'))" class="w-full py-2 px-3 rounded-lg bg-brand/20 text-brand text-sm font-medium hover:bg-brand/30 transition-colors">Reload Config</button>
+  </div>
+</nav>"""
+
+_TOAST_JS = """<div id="toast" class="fixed top-4 right-4 z-[100] hidden"></div>
 <script>
-async function poll(){
-  try{
-    const s = await fetch('/v1/stats'); const sj = await s.json();
-    const ps = sj.providers||{}; const c = sj.cache||{};
-    let rows = Object.entries(ps).map(([n,v])=>{
-      const st = v.rate_limited ? '<span class=warn>RATE LIMITED</span>' : v.circuit_state === 'OPEN' ? '<span class=err>CIRCUIT OPEN</span>' : '<span class=stat>OK</span>';
-      const cb = v.circuit_state || 'CLOSED';
-      return `<tr><td>${n}</td><td>${v.requests}</td><td class=err>${v.errors}</td><td>${v.tokens}</td><td>${v.latency_ema_ms}ms</td><td>${st}</td><td>${cb}</td></tr>`;
-    }).join('');
-    document.getElementById('stats').innerHTML = '<h2>Provider Stats</h2><table><tr><th>Provider</th><th>Reqs</th><th>Errors</th><th>Tokens</th><th>Latency</th><th>Status</th><th>Circuit</th></tr>'+rows+`</table><p>Cache: ${c.hits||0} hits / ${c.misses||0} misses | ${c.size||0} entries</p>`;
-  }catch(e){document.getElementById('stats').innerHTML='<p class=err>'+e+'</p>'}
-  try{
-    const m = await fetch('/v1/models'); const mj = await m.json();
-    const ids = (mj.data||[]).slice(0,100).map(x=>`<li>${x.id} <span class=warn>(${x.owned_by})</span></li>`).join('');
-    document.getElementById('models').innerHTML = '<h2>Models (first 100 of '+(mj.data||[]).length+')</h2><ul>'+ids+'</ul>';
-  }catch(e){document.getElementById('models').innerHTML='<p class=err>'+e+'</p>'}
+function showToast(msg,type='ok'){
+  const el=document.getElementById('toast');
+  const colors={ok:'bg-ok/20 border-ok text-ok',err:'bg-err/20 border-err text-err',warn:'bg-warn/20 border-warn text-warn'};
+  el.className='fixed top-4 right-4 z-[100] border rounded-lg px-4 py-3 text-sm font-medium shadow-lg '+(colors[type]||colors.ok);
+  el.textContent=msg;el.classList.remove('hidden');
+  setTimeout(()=>el.classList.add('hidden'),3000);
 }
-poll(); setInterval(poll, 3000);
-</script></body></html>"""
+</script>"""
+
+_POLL_JS = """let _pollTimers=[];
+function startPoll(fn,ms=3000){_pollTimers.forEach(t=>clearInterval(t));_pollTimers=[];fn();const id=setInterval(fn,ms);_pollTimers.push(id);}"""
 
 
-_SETTINGS_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Unified Router Settings</title>
-<style>
-body{font-family:system-ui;background:#0d1117;color:#c9d1d9;margin:0;padding:20px}
-h1{color:#58a6ff}.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin:12px 0}
-.btn{background:#238636;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
-.btn:hover{background:#2ea043}input,select{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:4px;color:white}
-.table{width:100%;border-collapse:collapse}.table th,.table td{border:1px solid #30363d;padding:8px;text-align:left}
-</style></head><body>
-<h1>Unified Router Settings</h1>
-<div class="card">
-<h2>Server Settings</h2>
-<form id="serverForm">
-  <label>Host: <input name="host" /> </label>
-  <label>Port: <input name="port" type="number" /> </label>
-  <label>Log Level:
-    <select name="log_level">
-      <option value="debug">debug</option><option value="info">info</option><option value="warning">warning</option>
-    </select>
-  </label>
-  <button type="submit" class="btn">Save Server</button>
-</form>
-</div>
+def _make_sidebar(active: str) -> str:
+    classes = {
+        "dashboard": "text-gray-400 hover:text-white hover:bg-surface",
+        "admin": "text-gray-400 hover:text-white hover:bg-surface",
+        "analytics": "text-gray-400 hover:text-white hover:bg-surface",
+        "settings": "text-gray-400 hover:text-white hover:bg-surface",
+    }
+    classes[active] = "bg-brand/20 text-brand"
+    return (_SIDEBAR
+        .replace("SIDEBAR_DASHBOARD_CLASS", classes["dashboard"])
+        .replace("SIDEBAR_ADMIN_CLASS", classes["admin"])
+        .replace("SIDEBAR_ANALYTICS_CLASS", classes["analytics"])
+        .replace("SIDEBAR_SETTINGS_CLASS", classes["settings"]))
 
-<div class="card">
-<h2>Providers</h2>
-<p>Configure API keys for each provider.</p>
-<div id="providers"></div>
-<button id="saveAll" class="btn">Save All Keys</button>
-</div>
+
+def _page(active: str, body: str) -> str:
+    return ("""<!DOCTYPE html>
+<html lang="en" class="dark"><head>""" + _COMMON_HEAD + """<title>Unified Router</title></head>
+<body class="text-gray-200 min-h-screen">""" + _make_sidebar(active) + _TOAST_JS + _POLL_JS + """<div class="ml-56">""" + body + """</div></body></html>""")
+
+
+_LANDING_BODY = """
+  <header class="flex items-center justify-between px-8 py-6 border-b border-border">
+    <div><h2 class="text-2xl font-bold text-white">Dashboard</h2><p class="text-gray-500 text-sm mt-1">System overview & health</p></div>
+    <div id="health-badge" class="flex items-center gap-2"><span class="inline-block w-2 h-2 rounded-full bg-gray-600 animate-pulse"></span><span class="text-sm text-gray-500">Loading...</span></div>
+  </header>
+  <div class="px-8 py-6 space-y-6">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="stat-cards"></div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-card rounded-xl border border-border p-5">
+        <h3 class="text-sm font-semibold text-gray-400 mb-4">Quick Start</h3>
+        <div class="space-y-3 text-sm">
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">1</span><div><p class="text-white font-medium">Point your client</p><code class="block mt-1 px-3 py-2 bg-surface rounded-lg text-info font-mono text-xs select-all">http://localhost:3333/v1</code></div></div>
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">2</span><div><p class="text-white font-medium">Use any model name or <code class="text-info">auto</code></p><code class="block mt-1 px-3 py-2 bg-surface rounded-lg text-info font-mono text-xs select-all">model: "auto"</code></div></div>
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">3</span><div><p class="text-white font-medium">OpenAI-compatible API</p><p class="text-gray-500">Works with any SDK &mdash; just change the base URL</p></div></div>
+        </div>
+      </div>
+      <div class="bg-card rounded-xl border border-border p-5">
+        <h3 class="text-sm font-semibold text-gray-400 mb-4">Provider Overview</h3>
+        <div id="provider-badges" class="flex flex-wrap gap-2"></div>
+      </div>
+    </div>
+    <div class="bg-card rounded-xl border border-border p-5">
+      <h3 class="text-sm font-semibold text-gray-400 mb-4">Recent Models <span id="model-count" class="text-gray-600"></span></h3>
+      <div id="model-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 max-h-64 overflow-y-auto"></div>
+    </div>
+  </div>
 
 <script>
-const apiBase = window.location.origin;
-async function load() {
-  const r = await fetch(apiBase + '/settings/api');
-  const d = await r.json();
-  document.querySelector('[name=host]').value = d.server?.host || '127.0.0.1';
-  document.querySelector('[name=port]').value = d.server?.port || 3333;
-  document.querySelector('[name=log_level]').value = d.server?.log_level || 'info';
-  const provDiv = document.getElementById('providers');
-  provDiv.innerHTML = '<table class=table><tr><th>Provider</th><th>API Key</th><th>Status</th></tr>';
-  for (const [name, p] of Object.entries(d.providers || {})) {
-    provDiv.innerHTML += `<tr>
-      <td>${name}</td>
-      <td><input type="password" data-name="${name}" value="${p.api_key||''}" placeholder="API Key" style="width:100%" /></td>
-      <td>${p.configured ? '✅' : '❌'}</td>
-    </tr>`;
-  }
-  provDiv.innerHTML += '</table>';
+function loadDashboard(){
+  Promise.all([fetch('/health'),fetch('/v1/stats'),fetch('/v1/models')])
+    .then(([hR,sR,mR])=>Promise.all([hR.json(),sR.json(),mR.json()]))
+    .then(([h,s,m])=>{
+      const hc=h.providers_configured||0,ha=h.providers_active||0,hm=h.models_cached||0;
+      const hs=h.status||'unknown';
+      const hbadge=hs==='ok'?'ok':hs==='degraded'?'warn':'err';
+      document.getElementById('health-badge').innerHTML=
+        '<span class="inline-block w-2.5 h-2.5 rounded-full bg-'+hbadge+' animate-pulse"></span>'+
+        '<span class="text-sm text-'+hbadge+' font-medium capitalize">'+hs+'</span>';
+      const ps=s.providers||{},c=s.cache||{},q=s.queue||{};
+      const totalReqs=Object.values(ps).reduce((a,v)=>a+(v.requests||0),0);
+      const totalErrs=Object.values(ps).reduce((a,v)=>a+(v.errors||0),0);
+      const totalTokens=Object.values(ps).reduce((a,v)=>a+(v.tokens||0),0);
+      const avgLat=Object.values(ps).length?Math.round(Object.values(ps).reduce((a,v)=>a+(v.latency_ema_ms||0),0)/Object.values(ps).length):0;
+      document.getElementById('stat-cards').innerHTML=[
+        dCard('Providers',ha+'/'+hc,'active','#6366f1'),
+        dCard('Models',hm,'cached','#3b82f6'),
+        dCard('Requests',totalReqs.toLocaleString(),'total','#22c55e'),
+        dCard('Avg Latency',avgLat+'ms','#f59e0b'),
+        dCard('Errors',totalErrs.toLocaleString(),'total','#ef4444'),
+        dCard('Tokens',totalTokens.toLocaleString(),'total','#8b5cf6'),
+        dCard('Cache Hits',c.hits||0,'hit rate #','#06b6d4'),
+        dCard('Queue',q.pending||0+'/'+(q.size||100),'pending','#f97316'),
+      ].join('');
+      const badges=Object.entries(ps).map(([n,v])=>{
+        let cls='bg-gray-700 text-gray-400';
+        if(v.circuit_state==='OPEN')cls='bg-err/20 text-err';
+        else if(v.rate_limited)cls='bg-warn/20 text-warn';
+        else cls='bg-ok/20 text-ok';
+        return '<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium '+cls+'"><span class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></span>'+n+'</span>';
+      }).join('');
+      document.getElementById('provider-badges').innerHTML=badges||'<span class="text-gray-600 text-sm">No providers</span>';
+      const models=(m.data||[]);
+      document.getElementById('model-count').textContent='('+models.length+')';
+      document.getElementById('model-grid').innerHTML=models.slice(0,120).map(x=>
+        '<div class="px-2.5 py-1.5 bg-surface rounded-lg text-xs text-gray-300 truncate" title="'+x.id+'">'+x.id+'</div>'
+      ).join('')||'<span class="text-gray-600 text-sm">No models loaded</span>';
+    }).catch(e=>{console.error(e);document.getElementById('health-badge').innerHTML='<span class="text-err text-sm">Connection lost</span>';});
 }
-document.getElementById('serverForm').onsubmit = async e => {
+function dCard(label,value,sub,color){
+  return '<div class="bg-card rounded-xl border border-border p-4 hover:border-'+color+'/40 transition-colors">'+
+    '<p class="text-xs font-medium text-gray-500 mb-1">'+label+'</p>'+
+    '<p class="text-2xl font-bold text-white">'+value+'</p>'+
+    '<p class="text-xs text-gray-600 mt-1">'+sub+'</p></div>';
+}
+startPoll(loadDashboard,5000);
+</script>"""
+
+_LANDING_HTML = None  # built dynamically
+
+_ADMIN_BODY = """
+  <header class="flex items-center justify-between px-8 py-6 border-b border-border">
+    <div><h2 class="text-2xl font-bold text-white">Providers</h2><p class="text-gray-500 text-sm mt-1">Real-time provider status & statistics</p></div>
+    <div class="flex items-center gap-3">
+      <button onclick="fetch('/reload',{method:'POST'}).then(r=>r.json()).then(d=>showToast(d.status==='reloaded'?'Reloaded OK':'Reload failed')).catch(()=>showToast('Reload failed','err'))" class="px-4 py-2 rounded-lg bg-brand/20 text-brand text-sm font-medium hover:bg-brand/30 transition-colors">Refresh Models</button>
+    </div>
+  </header>
+  <div class="px-8 py-6 space-y-6">
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="summary-cards"></div>
+    <div class="bg-card rounded-xl border border-border overflow-hidden">
+      <div class="px-5 py-4 border-b border-border flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-white">All Providers</h3>
+        <span id="prov-count" class="text-xs text-gray-500"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm"><thead><tr class="text-left text-gray-500 border-b border-border">
+          <th class="px-5 py-3 font-medium">Provider</th>
+          <th class="px-5 py-3 font-medium">Requests</th>
+          <th class="px-5 py-3 font-medium">Errors</th>
+          <th class="px-5 py-3 font-medium">Tokens</th>
+          <th class="px-5 py-3 font-medium">Latency</th>
+          <th class="px-5 py-3 font-medium">Status</th>
+          <th class="px-5 py-3 font-medium">Circuit</th>
+        </tr></thead><tbody id="prov-rows"></tbody></table>
+      </div>
+    </div>
+    <div class="bg-card rounded-xl border border-border p-5">
+      <h3 class="text-sm font-semibold text-gray-400 mb-3">Cache <span id="cache-info" class="text-gray-600"></span></h3>
+      <div class="flex gap-6 text-sm">
+        <div><span class="text-gray-500">Hits:</span> <span id="cache-hits" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Misses:</span> <span id="cache-misses" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Entries:</span> <span id="cache-size" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Hit Rate:</span> <span id="cache-rate" class="text-ok font-medium">0%</span></div>
+      </div>
+    </div>
+    <div class="bg-card rounded-xl border border-border p-5">
+      <h3 class="text-sm font-semibold text-gray-400 mb-3">Request Queue <span id="queue-info" class="text-gray-600"></span></h3>
+      <div class="flex gap-6 text-sm">
+        <div><span class="text-gray-500">Pending:</span> <span id="queue-pending" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Completed:</span> <span id="queue-completed" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Rejected:</span> <span id="queue-rejected" class="text-white font-medium">0</span></div>
+      </div>
+    </div>
+    <div class="bg-card rounded-xl border border-border p-5">
+      <h3 class="text-sm font-semibold text-gray-400 mb-3">Models <span id="model-count" class="text-gray-600"></span></h3>
+      <input id="model-search" type="text" placeholder="Filter models..." class="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand mb-3" />
+      <div id="model-list" class="space-y-1 max-h-96 overflow-y-auto"></div>
+    </div>
+  </div>
+<script>
+let allModels=[];
+function loadAdmin(){
+  Promise.all([fetch('/v1/stats'),fetch('/v1/models')])
+    .then(([sR,mR])=>Promise.all([sR.json(),mR.json()]))
+    .then(([s,m])=>{
+      const ps=s.providers||{},c=s.cache||{},q=s.queue||{};
+      const totalReqs=Object.values(ps).reduce((a,v)=>a+(v.requests||0),0);
+      const totalErrs=Object.values(ps).reduce((a,v)=>a+(v.errors||0),0);
+      const totalTokens=Object.values(ps).reduce((a,v)=>a+(v.tokens||0),0);
+      document.getElementById('summary-cards').innerHTML=[
+        sCard('Total Requests',totalReqs.toLocaleString(),'#22c55e'),
+        sCard('Total Errors',totalErrs.toLocaleString(),'#ef4444'),
+        sCard('Total Tokens',totalTokens.toLocaleString(),'#8b5cf6'),
+      ].join('');
+      document.getElementById('prov-count').textContent=Object.keys(ps).length+' configured';
+      const rows=Object.entries(ps).map(([n,v])=>{
+        let stBadge='<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-ok/20 text-ok"><span class="w-1.5 h-1.5 rounded-full bg-ok"></span>OK</span>';
+        if(v.rate_limited)stBadge='<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-warn/20 text-warn"><span class="w-1.5 h-1.5 rounded-full bg-warn"></span>Rate Limited</span>';
+        else if(v.circuit_state==='OPEN')stBadge='<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-err/20 text-err"><span class="w-1.5 h-1.5 rounded-full bg-err"></span>Circuit Open</span>';
+        let cbBadge='<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-ok/10 text-ok">CLOSED</span>';
+        if(v.circuit_state==='OPEN')cbBadge='<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-err/10 text-err">OPEN</span>';
+        else if(v.circuit_state==='HALF_OPEN')cbBadge='<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-warn/10 text-warn">HALF-OPEN</span>';
+        const errCls=v.errors>0?'text-err':'text-gray-300';
+        return '<tr class="border-b border-border/50 hover:bg-surface/50">'+
+          '<td class="px-5 py-3 font-medium text-white">'+n+'</td>'+
+          '<td class="px-5 py-3">'+(v.requests||0)+'</td>'+
+          '<td class="px-5 py-3 '+errCls+'">'+(v.errors||0)+'</td>'+
+          '<td class="px-5 py-3">'+(v.tokens||0).toLocaleString()+'</td>'+
+          '<td class="px-5 py-3">'+(v.latency_ema_ms||0)+'ms</td>'+
+          '<td class="px-5 py-3">'+stBadge+'</td>'+
+          '<td class="px-5 py-3">'+cbBadge+'</td></tr>';
+      }).join('');
+      document.getElementById('prov-rows').innerHTML=rows||'<tr><td colspan="7" class="px-5 py-8 text-center text-gray-600">No providers</td></tr>';
+      document.getElementById('cache-hits').textContent=c.hits||0;
+      document.getElementById('cache-misses').textContent=c.misses||0;
+      document.getElementById('cache-size').textContent=c.size||0;
+      const total=(c.hits||0)+(c.misses||0);
+      document.getElementById('cache-rate').textContent=total?Math.round((c.hits||0)/total*100)+'%':'0%';
+      document.getElementById('queue-pending').textContent=q.pending||0;
+      document.getElementById('queue-completed').textContent=q.completed||0;
+      document.getElementById('queue-rejected').textContent=q.rejected||0;
+      allModels=(m.data||[]).map(x=>({id:x.id,provider:x.owned_by}));
+      document.getElementById('model-count').textContent='('+allModels.length+')';
+      renderModels();
+    }).catch(e=>console.error(e));
+}
+function renderModels(filter=''){
+  const f=filter.toLowerCase();
+  const filtered=f?allModels.filter(m=>m.id.toLowerCase().includes(f)):allModels.slice(0,200);
+  document.getElementById('model-list').innerHTML=filtered.map(m=>
+    '<div class="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface transition-colors">'+
+    '<span class="text-sm text-gray-300 truncate" title="'+m.id+'">'+m.id+'</span>'+
+    '<span class="text-xs text-gray-600 ml-3 flex-shrink-0">'+m.provider+'</span></div>'
+  ).join('')||'<div class="text-gray-600 text-sm py-4 text-center">No models found</div>';
+}
+function sCard(label,val,color){
+  return '<div class="bg-card rounded-xl border border-border p-4"><p class="text-xs text-gray-500 mb-1">'+label+'</p><p class="text-2xl font-bold" style="color:'+color+'">'+val+'</p></div>';
+}
+document.getElementById('model-search').addEventListener('input',e=>renderModels(e.target.value));
+startPoll(loadAdmin,3000);
+</script>"""
+
+_ADMIN_HTML = None  # built dynamically
+
+_SETTINGS_BODY = """
+  <header class="flex items-center justify-between px-8 py-6 border-b border-border">
+    <div><h2 class="text-2xl font-bold text-white">Settings</h2><p class="text-gray-500 text-sm mt-1">Configure all providers & server settings</p></div>
+  </header>
+  <div class="px-8 py-6 space-y-6">
+    <div class="bg-card rounded-xl border border-border p-6 max-w-4xl">
+      <h3 class="text-sm font-semibold text-white mb-4">Server Configuration</h3>
+      <form id="serverForm" class="space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-xs text-gray-500 mb-1.5">Host</label><input name="host" class="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand" /></div>
+          <div><label class="block text-xs text-gray-500 mb-1.5">Port</label><input name="port" type="number" class="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand" /></div>
+        </div>
+        <div><label class="block text-xs text-gray-500 mb-1.5">Log Level</label>
+          <select name="log_level" class="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand">
+            <option value="debug">debug</option><option value="info">info</option><option value="warning">warning</option><option value="error">error</option>
+          </select>
+        </div>
+        <button type="submit" class="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/80 transition-colors">Save Server Settings</button>
+      </form>
+    </div>
+
+    <div class="bg-card rounded-xl border border-border p-6 max-w-5xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-sm font-semibold text-white">All Providers</h3>
+        <span id="key-count" class="text-xs text-gray-500"></span>
+      </div>
+      <div class="flex gap-2 mb-4">
+        <input id="key-search" type="text" placeholder="Filter providers..." class="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand" />
+        <select id="type-filter" class="px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand">
+          <option value="">All Types</option><option value="free">Free</option><option value="phone">Phone Verify</option><option value="credits">Credits</option><option value="paid">Paid</option>
+        </select>
+        <select id="status-filter" class="px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand">
+          <option value="">All Status</option><option value="configured">Configured</option><option value="unconfigured">Not Configured</option>
+        </select>
+      </div>
+      <div class="space-y-2" id="provider-keys"></div>
+      <div class="mt-5 flex items-center gap-3">
+        <button id="saveAll" class="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/80 transition-colors">Save All Keys</button>
+        <button id="saveAndReload" class="px-4 py-2 rounded-lg bg-ok/20 text-ok text-sm font-medium hover:bg-ok/30 transition-colors">Save & Reload Router</button>
+        <span id="save-status" class="text-xs text-gray-600"></span>
+      </div>
+    </div>
+
+    <div class="bg-card rounded-xl border border-border p-6 max-w-4xl">
+      <h3 class="text-sm font-semibold text-white mb-3">Priority Order</h3>
+      <p id="priority-list" class="text-sm text-gray-400 font-mono"></p>
+    </div>
+
+    <div class="bg-card rounded-xl border border-border p-6 max-w-4xl">
+      <h3 class="text-sm font-semibold text-white mb-3">Danger Zone</h3>
+      <button onclick="if(confirm('Reload config from disk? Unsaved changes will be lost.')){fetch('/reload',{method:'POST'}).then(r=>r.json()).then(d=>{showToast(d.status==='reloaded'?'Config reloaded':'Reload failed');loadSettings();}).catch(()=>showToast('Reload failed','err'))}" class="px-4 py-2 rounded-lg bg-err/20 text-err text-sm font-medium hover:bg-err/30 transition-colors">Force Reload Config</button>
+    </div>
+  </div>
+<script>
+const apiBase=window.location.origin;
+let allProviders=[];
+const TYPE_COLORS={free:'bg-ok/20 text-ok',phone:'bg-warn/20 text-warn',credits:'bg-info/20 text-info',paid:'bg-gray-600/30 text-gray-400'};
+const TYPE_LABELS={free:'Free',phone:'Phone',credits:'Credits',paid:'Paid'};
+async function loadSettings(){
+  const r=await fetch(apiBase+'/settings/api');
+  const d=await r.json();
+  document.querySelector('[name=host]').value=d.server?.host||'127.0.0.1';
+  document.querySelector('[name=port]').value=d.server?.port||3333;
+  document.querySelector('[name=log_level]').value=d.server?.log_level||'info';
+  allProviders=Object.entries(d.providers||{}).map(([id,p])=>({id,...p}));
+  const configured=allProviders.filter(p=>p.configured).length;
+  document.getElementById('key-count').textContent=configured+'/'+allProviders.length+' configured';
+  document.getElementById('priority-list').textContent=(d.priority||[]).join('  \u2192  ')||'Default priority';
+  renderProviderKeys();
+}
+function renderProviderKeys(){
+  const search=(document.getElementById('key-search').value||'').toLowerCase();
+  const typeFilter=document.getElementById('type-filter').value;
+  const statusFilter=document.getElementById('status-filter').value;
+  let filtered=allProviders;
+  if(search)filtered=filtered.filter(p=>(p.name||p.id).toLowerCase().includes(search)||(p.env_key||'').toLowerCase().includes(search));
+  if(typeFilter)filtered=filtered.filter(p=>p.type===typeFilter);
+  if(statusFilter==='configured')filtered=filtered.filter(p=>p.configured);
+  else if(statusFilter==='unconfigured')filtered=filtered.filter(p=>!p.configured);
+  document.getElementById('provider-keys').innerHTML=filtered.map(p=>{
+    const typeCls=TYPE_COLORS[p.type]||TYPE_COLORS.free;
+    const typeLabel=TYPE_LABELS[p.type]||p.type;
+    const statusDot=p.configured?'bg-ok':'bg-gray-600';
+    const statusText=p.configured?'Ready':'Not set';
+    const statusCls=p.configured?'text-ok':'text-gray-600';
+    const signup=p.signup_url?'<a href="'+p.signup_url+'" target="_blank" class="text-xs text-info hover:underline">Get Key</a>':'';
+    const envHint=p.env_key?'<span class="text-[10px] text-gray-600 font-mono">'+p.env_key+'</span>':'';
+    const stats=(p.configured&&p.requests)?'<span class="text-[10px] text-gray-600 ml-2">'+p.requests+' reqs \u00B7 '+p.tokens+' tok</span>':'';
+    const rl=p.rate_limited?'<span class="text-[10px] text-warn ml-1">RATE LIMITED</span>':'';
+    const cs=p.circuit_state==='OPEN'?'<span class="text-[10px] text-err ml-1">CIRCUIT OPEN</span>':'';
+    return '<div class="flex items-center gap-3 px-4 py-3 bg-surface rounded-lg">'+
+      '<span class="w-2 h-2 rounded-full '+statusDot+' flex-shrink-0"></span>'+
+      '<div class="flex flex-col min-w-0 w-40 flex-shrink-0">'+
+        '<span class="text-sm text-white font-medium truncate" title="'+(p.name||p.id)+'">'+(p.name||p.id)+'</span>'+
+        '<div class="flex items-center gap-1.5">'+envHint+rl+cs+stats+'</div>'+
+      '</div>'+
+      '<span class="px-2 py-0.5 rounded-full text-[10px] font-medium '+typeCls+' flex-shrink-0">'+typeLabel+'</span>'+
+      '<input type="password" data-name="'+p.id+'" value="'+(p.api_key||'')+'" placeholder="sk-..." class="flex-1 px-3 py-1.5 bg-card border border-border rounded-lg text-sm text-white placeholder-gray-700 focus:outline-none focus:border-brand" />'+
+      signup+
+      '<span class="text-xs '+statusCls+' w-16 text-right flex-shrink-0">'+statusText+'</span></div>';
+  }).join('')||'<div class="text-gray-600 text-sm py-4 text-center">No providers match filter</div>';
+}
+async function saveKeys(){
+  const keys={};
+  document.querySelectorAll('input[data-name]').forEach(inp=>{keys[inp.dataset.name]=inp.value;});
+  try{
+    await fetch(apiBase+'/settings/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys})});
+    showToast('API keys saved');
+    loadSettings();
+  }catch(e){showToast('Save failed','err');}
+}
+document.getElementById('serverForm').onsubmit=async e=>{
   e.preventDefault();
-  const r = await fetch(apiBase + '/settings/server', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      host: document.querySelector('[name=host]').value,
-      port: parseInt(document.querySelector('[name=port]').value),
-      log_level: document.querySelector('[name=log_level]').value
-    })
-  });
-  alert(await r.text());
+  try{
+    const r=await fetch(apiBase+'/settings/server',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({host:document.querySelector('[name=host]').value,port:parseInt(document.querySelector('[name=port]').value),log_level:document.querySelector('[name=log_level]').value})
+    });
+    await r.json();showToast('Server settings saved');
+  }catch(e){showToast('Save failed','err');}
 };
-document.getElementById('saveAll').onclick = async () => {
-  const keys = {};
-  document.querySelectorAll('input[data-name]').forEach(inp => {
-    keys[inp.dataset.name] = inp.value;
-  });
-  const r = await fetch(apiBase + '/settings/keys', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({keys})
-  });
-  alert(await r.text());
-};
-load(); setInterval(load, 10000);
-</script></body></html>"""
+document.getElementById('saveAll').onclick=saveKeys;
+document.getElementById('saveAndReload').onclick=async()=>{await saveKeys();try{await fetch('/reload',{method:'POST'});showToast('Router reloaded with new keys');}catch(e){showToast('Reload failed','err');}};
+document.getElementById('key-search').addEventListener('input',renderProviderKeys);
+document.getElementById('type-filter').addEventListener('change',renderProviderKeys);
+document.getElementById('status-filter').addEventListener('change',renderProviderKeys);
+loadSettings();setInterval(loadSettings,15000);
+</script>"""
+
+_SETTINGS_HTML = None  # built dynamically
+
+_ANALYTICS_BODY = """
+  <header class="flex items-center justify-between px-8 py-6 border-b border-border">
+    <div><h2 class="text-2xl font-bold text-white">Analytics</h2><p class="text-gray-500 text-sm mt-1">Lifetime usage, per-provider & model breakdown</p></div>
+    <div class="flex gap-2">
+      <select id="time-range" class="px-3 py-2 bg-surface border border-border rounded-lg text-sm text-white focus:outline-none focus:border-brand">
+        <option value="all">All Time</option><option value="3600">Last Hour</option><option value="86400">Last 24h</option><option value="604800">Last 7d</option>
+      </select>
+    </div>
+  </header>
+  <div class="px-8 py-6 space-y-6">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="lifetime-cards"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-card rounded-xl border border-border p-5">
+        <h3 class="text-sm font-semibold text-white mb-4">Provider Breakdown</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm"><thead><tr class="text-left text-gray-500 border-b border-border">
+            <th class="px-3 py-2 font-medium">Provider</th>
+            <th class="px-3 py-2 font-medium">Requests</th>
+            <th class="px-3 py-2 font-medium">Errors</th>
+            <th class="px-3 py-2 font-medium">Tokens</th>
+            <th class="px-3 py-2 font-medium">Avg Latency</th>
+            <th class="px-3 py-2 font-medium">Last Used</th>
+          </tr></thead><tbody id="provider-usage-rows"></tbody></table>
+        </div>
+      </div>
+
+      <div class="bg-card rounded-xl border border-border p-5">
+        <h3 class="text-sm font-semibold text-white mb-4">Top Models</h3>
+        <div class="overflow-x-auto max-h-80 overflow-y-auto">
+          <table class="w-full text-sm"><thead><tr class="text-left text-gray-500 border-b border-border sticky top-0 bg-card">
+            <th class="px-3 py-2 font-medium">Model</th>
+            <th class="px-3 py-2 font-medium">Requests</th>
+            <th class="px-3 py-2 font-medium">Tokens</th>
+            <th class="px-3 py-2 font-medium">Errors</th>
+            <th class="px-3 py-2 font-medium">Last Used</th>
+          </tr></thead><tbody id="model-usage-rows"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-card rounded-xl border border-border p-5">
+      <h3 class="text-sm font-semibold text-white mb-4">Recent Requests <span id="req-count" class="text-gray-600"></span></h3>
+      <div class="overflow-x-auto max-h-96 overflow-y-auto">
+        <table class="w-full text-sm"><thead><tr class="text-left text-gray-500 border-b border-border sticky top-0 bg-card">
+          <th class="px-3 py-2 font-medium">Time</th>
+          <th class="px-3 py-2 font-medium">Provider</th>
+          <th class="px-3 py-2 font-medium">Model</th>
+          <th class="px-3 py-2 font-medium">Tokens</th>
+          <th class="px-3 py-2 font-medium">Latency</th>
+          <th class="px-3 py-2 font-medium">Status</th>
+        </tr></thead><tbody id="request-log-rows"></tbody></table>
+      </div>
+    </div>
+  </div>
+<script>
+function loadAnalytics(){
+  Promise.all([fetch('/usage'),fetch('/v1/stats')])
+    .then(([uR,sR])=>Promise.all([uR.json(),sR.json()]))
+    .then(([u,s])=>{
+      document.getElementById('lifetime-cards').innerHTML=[
+        lCard('Lifetime Requests',u.lifetime_requests.toLocaleString(),'total','#22c55e'),
+        lCard('Lifetime Tokens',u.lifetime_tokens.toLocaleString(),'total','#8b5cf6'),
+        lCard('Lifetime Errors',u.lifetime_errors.toLocaleString(),'total','#ef4444'),
+        lCard('Uptime',formatUptime(u.uptime_seconds),'','#3b82f6'),
+      ].join('');
+
+      const provRows=Object.entries(u.providers||{}).sort((a,b)=>b[1].requests-a[1].requests).map(([name,v])=>{
+        const avgLat=v.requests?Math.round(v.latency_ms_total/v.requests):0;
+        const ago=v.last_used_ago?formatAgo(v.last_used_ago):'Never';
+        const errCls=(v.errors||0)>0?'text-err':'text-gray-300';
+        return '<tr class="border-b border-border/50 hover:bg-surface/50">'+
+          '<td class="px-3 py-2 font-medium text-white">'+name+'</td>'+
+          '<td class="px-3 py-2">'+v.requests+'</td>'+
+          '<td class="px-3 py-2 '+errCls+'">'+v.errors+'</td>'+
+          '<td class="px-3 py-2">'+v.tokens.toLocaleString()+'</td>'+
+          '<td class="px-3 py-2">'+avgLat+'ms</td>'+
+          '<td class="px-3 py-2 text-gray-500 text-xs">'+ago+'</td></tr>';
+      }).join('');
+      document.getElementById('provider-usage-rows').innerHTML=provRows||'<tr><td colspan="6" class="px-3 py-8 text-center text-gray-600">No data yet</td></tr>';
+
+      const modelRows=Object.entries(u.models||{}).sort((a,b)=>b[1].requests-a[1].requests).slice(0,50).map(([name,v])=>{
+        const ago=v.last_used_ago?formatAgo(v.last_used_ago):'Never';
+        const errCls=(v.errors||0)>0?'text-err':'text-gray-300';
+        const provList=Object.entries(v.providers||{}).map(([pn,pv])=>pn+'('+pv.requests+')').join(', ');
+        return '<tr class="border-b border-border/50 hover:bg-surface/50">'+
+          '<td class="px-3 py-2 font-mono text-xs text-white truncate max-w-xs" title="'+name+'\\nvia: '+provList+'">'+name+'</td>'+
+          '<td class="px-3 py-2">'+v.requests+'</td>'+
+          '<td class="px-3 py-2">'+v.tokens.toLocaleString()+'</td>'+
+          '<td class="px-3 py-2 '+errCls+'">'+v.errors+'</td>'+
+          '<td class="px-3 py-2 text-gray-500 text-xs">'+ago+'</td></tr>';
+      }).join('');
+      document.getElementById('model-usage-rows').innerHTML=modelRows||'<tr><td colspan="5" class="px-3 py-8 text-center text-gray-600">No data yet</td></tr>';
+
+      const rangeSec=parseInt(document.getElementById('time-range').value)||0;
+      let reqs=u.recent_requests||[];
+      if(rangeSec>0){
+        const cutoff=(Date.now()/1000)-rangeSec;
+        reqs=reqs.filter(r=>r.time>=cutoff);
+      }
+      document.getElementById('req-count').textContent='('+reqs.length+')';
+      const reqRows=reqs.slice().reverse().map(r=>{
+        const t=new Date(r.time*1000);
+        const timeStr=t.toLocaleTimeString();
+        const statusCls=r.status==='ok'?'text-ok':r.status==='rate_limit'?'text-warn':'text-err';
+        return '<tr class="border-b border-border/50 hover:bg-surface/50">'+
+          '<td class="px-3 py-2 text-xs text-gray-400">'+timeStr+'</td>'+
+          '<td class="px-3 py-2">'+r.provider+'</td>'+
+          '<td class="px-3 py-2 font-mono text-xs">'+r.model+'</td>'+
+          '<td class="px-3 py-2">'+r.tokens+'</td>'+
+          '<td class="px-3 py-2">'+r.latency_ms+'ms</td>'+
+          '<td class="px-3 py-2 '+statusCls+'">'+r.status+'</td></tr>';
+      }).join('');
+      document.getElementById('request-log-rows').innerHTML=reqRows||'<tr><td colspan="6" class="px-3 py-8 text-center text-gray-600">No requests yet</td></tr>';
+    }).catch(e=>console.error(e));
+}
+function lCard(label,val,sub,color){
+  return '<div class="bg-card rounded-xl border border-border p-4"><p class="text-xs text-gray-500 mb-1">'+label+'</p><p class="text-2xl font-bold" style="color:'+color+'">'+val+'</p>'+(sub?'<p class="text-xs text-gray-600 mt-1">'+sub+'</p>':'')+'</div>';
+}
+function formatAgo(s){
+  if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';
+}
+function formatUptime(s){
+  if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.floor(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h';
+}
+document.getElementById('time-range').addEventListener('change',loadAnalytics);
+startPoll(loadAnalytics,5000);
+</script>"""
+
+_ANALYTICS_HTML = None  # built dynamically
 
 
 @app.get("/health")
@@ -465,29 +895,54 @@ async def reload_config():
         return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "reload_error"}})
 
 
+@app.get("/analytics")
+async def analytics():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(_page("analytics", _ANALYTICS_BODY))
+
+
 @app.get("/admin")
 async def admin():
     from fastapi.responses import HTMLResponse
-    return HTMLResponse(_ADMIN_HTML)
+    return HTMLResponse(_page("admin", _ADMIN_BODY))
 
 
 @app.get("/settings")
 async def settings_page():
     from fastapi.responses import HTMLResponse
-    return HTMLResponse(_SETTINGS_HTML)
+    return HTMLResponse(_page("settings", _SETTINGS_BODY))
 
 
 @app.get("/settings/api")
 async def get_settings_api():
-    if not router_instance:
-        raise HTTPException(503, "Router not initialized")
     config = load_config()
+    registry = load_registry()
     providers_status = {}
-    for name, prov in router_instance.providers.items():
+
+    all_registry = {}
+    all_registry.update(registry.get("openai_compatible", {}))
+    all_registry.update(registry.get("custom", {}))
+
+    for name, reg in all_registry.items():
+        prov = router_instance.providers.get(name) if router_instance else None
         providers_status[name] = {
-            "api_key": prov.mask_api_key(),
-            "configured": prov.is_configured,
+            "name": reg.get("name", name),
+            "api_key": prov.mask_api_key() if prov else "",
+            "configured": prov.is_configured if prov else bool(config.get("providers", {}).get(name, {}).get("api_key")),
+            "available": prov.is_available if prov else False,
+            "base_url": reg.get("base_url", ""),
+            "signup_url": reg.get("signup_url", ""),
+            "free_tier": reg.get("free_tier", ""),
+            "type": reg.get("type", "free"),
+            "env_key": reg.get("env_key", ""),
+            "circuit_state": prov.circuit_breaker.state.name if prov and prov.is_configured else None,
+            "rate_limited": prov.is_rate_limited if prov and prov.is_configured else False,
+            "requests": prov.request_count if prov else 0,
+            "errors": prov.error_count if prov else 0,
+            "tokens": prov.token_count if prov else 0,
+            "latency_ema_ms": round(prov.latency_ema * 1000, 1) if prov and prov.latency_ema else 0,
         }
+
     return {
         "server": config.get("server", {}),
         "providers": providers_status,
@@ -514,8 +969,27 @@ async def save_keys(req: Request):
     cfg_path = CONFIG_DIR / "config.yml"
     config = yaml.safe_load(cfg_path.read_text()) if cfg_path.exists() else {}
     provs = config.setdefault("providers", {})
+    registry = load_registry()
+    all_registry = {}
+    all_registry.update(registry.get("openai_compatible", {}))
+    all_registry.update(registry.get("custom", {}))
     for name, key in keys.items():
-        if name in provs:
-            provs[name]["api_key"] = key
+        if key:
+            if name not in provs:
+                reg = all_registry.get(name, {})
+                provs[name] = {
+                    "base_url": reg.get("base_url", ""),
+                    "env_key": reg.get("env_key", ""),
+                    "api_key": key,
+                }
+            else:
+                provs[name]["api_key"] = key
+        elif name in provs:
+            provs[name].pop("api_key", None)
     cfg_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
     return {"status": "saved"}
+
+
+@app.get("/usage")
+async def usage_stats():
+    return get_usage_stats().snapshot()

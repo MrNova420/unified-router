@@ -80,6 +80,7 @@ class BaseProvider(ABC):
     def mark_rate_limited(self, retry_after: int = 60):
         self._rate_limited_until = time.time() + retry_after
         self.consecutive_failures += 1
+        self._record_usage(status="rate_limit", error=f"Rate limited, retry after {retry_after}s")
 
     def mark_success(self, latency: float = 0.0, tokens: int = 0):
         self.consecutive_failures = 0
@@ -90,9 +91,31 @@ class BaseProvider(ABC):
             else:
                 self.latency_ema = 0.7 * self.latency_ema + 0.3 * latency
         self.token_count += tokens
+        self._record_usage(tokens=tokens, latency_ms=latency * 1000, status="ok")
 
     def mark_error(self):
         self.error_count += 1
+        self._record_usage(status="error")
+
+    def _record_usage(self, tokens: int = 0, latency_ms: float = 0.0, status: str = "ok", error: str | None = None):
+        try:
+            from .observability import current_trace
+            from .usage_stats import get_usage_stats, periodic_flush
+            span = current_trace()
+            model = span.model if span else None
+            request_id = span.request_id if span else None
+            get_usage_stats().record_request(
+                provider=self.name,
+                model=model or "unknown",
+                tokens=tokens,
+                latency_ms=latency_ms,
+                status=status,
+                error=error,
+                request_id=request_id,
+            )
+            periodic_flush()
+        except Exception:
+            pass
 
     def mask_api_key(self) -> str:
         if not self.api_key or len(self.api_key) < 8:

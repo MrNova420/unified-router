@@ -35,17 +35,19 @@ def _get_provider_class(adapter: str | None) -> type[BaseProvider]:
     raise ValueError(f"No provider class found in module {mod_path}")
 
 
-def build_providers(config: dict[str, Any]) -> dict[str, BaseProvider]:
+def build_providers(config: dict[str, Any], include_unconfigured: bool = True) -> dict[str, BaseProvider]:
     registry = load_registry()
     providers: dict[str, BaseProvider] = {}
     pconfigs = config.get("providers", {})
 
     for name, reg in registry.get("openai_compatible", {}).items():
-        if name not in pconfigs:
-            continue
-        pcfg = pconfigs[name]
+        pcfg = dict(pconfigs.get(name, {}))
+        pcfg.setdefault("base_url", reg.get("base_url", ""))
+        pcfg.setdefault("env_key", reg.get("env_key", ""))
         if not pcfg.get("api_key"):
-            continue
+            if not include_unconfigured:
+                continue
+            pcfg.setdefault("api_key", "")
         instance = OpenAICompatibleProvider(pcfg)
         instance.name = reg.get("name", name)
         if not instance.base_url:
@@ -53,15 +55,18 @@ def build_providers(config: dict[str, Any]) -> dict[str, BaseProvider]:
         providers[name] = instance
 
     for name, reg in registry.get("custom", {}).items():
-        if name not in pconfigs:
-            continue
-        pcfg = pconfigs[name]
+        pcfg = dict(pconfigs.get(name, {}))
+        pcfg.setdefault("base_url", reg.get("base_url", ""))
+        pcfg.setdefault("env_key", reg.get("env_key", ""))
         if not pcfg.get("api_key"):
-            continue
+            if not include_unconfigured:
+                continue
+            pcfg.setdefault("api_key", "")
         adapter_name = reg.get("adapter", "")
         cls = _get_provider_class(adapter_name)
         if cls.requires_account_id and not pcfg.get("account_id") and not reg.get("env_account_id"):
-            continue
+            if not include_unconfigured:
+                continue
         instance = cls(pcfg)
         instance.name = reg.get("name", name)
         if not instance.base_url:
