@@ -2,43 +2,115 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import yaml
 import re
 
-def configure_opencode(base_url: str = "http://localhost:3333/v1"):
-    opencode_cfg_dir = Path.home() / ".config" / "opencode"
-    opencode_cfg = opencode_cfg_dir / "opencode.jsonc"
-    
+
+ROUTER_KEY_FILE = Path.home() / ".config" / "unified-router" / ".router_key"
+
+
+def generate_router_key() -> str:
+    key = f"ur-sk-{secrets.token_hex(24)}"
+    ROUTER_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ROUTER_KEY_FILE.write_text(key, encoding="utf-8")
+    os.chmod(ROUTER_KEY_FILE, 0o600)
+    return key
+
+
+def get_router_key() -> str:
+    if ROUTER_KEY_FILE.exists():
+        key = ROUTER_KEY_FILE.read_text(encoding="utf-8").strip()
+        if key.startswith("ur-sk-"):
+            return key
+    return generate_router_key()
+
+def _get_windows_home() -> Path | None:
+    """On WSL, return Path to Windows home directory (e.g. /mnt/c/Users/kayde)."""
+    if not os.environ.get("WSL_DISTRO_NAME"):
+        return None
     try:
-        opencode_cfg_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not opencode_cfg.exists():
-            # Create default minimal config if it doesn't exist
-            initial_data = {
-                "$schema": "https://opencode.ai/config.json",
-                "provider": {}
-            }
-            opencode_cfg.write_text(json.dumps(initial_data, indent=2), encoding="utf-8")
-        
-        content = opencode_cfg.read_text(encoding="utf-8")
-        # Basic JSONC to JSON: remove single line comments
-        json_content = re.sub(r"//.*", "", content)
-        data = json.loads(json_content)
-        
-        providers = data.setdefault("provider", {})
-        providers["unified-router"] = {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Unified Router",
-            "options": {
-                "baseURL": base_url
-            }
+        result = subprocess.run(
+            ["cmd.exe", "/c", "echo", "%USERPROFILE%"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            win_path = result.stdout.strip()
+            if win_path and "\\" in win_path:
+                drive = win_path[0].lower()
+                rest = win_path[2:].replace("\\", "/")
+                win_home = Path(f"/mnt/{drive}{rest}")
+                if win_home.exists():
+                    return win_home
+    except Exception:
+        pass
+    return None
+
+
+def _clean_jsonc(raw: str) -> str:
+    result = raw
+    # 1. Strip BOM
+    result = result.lstrip("\ufeff")
+    # 2. Remove control characters (keep \n, \r, \t)
+    result = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", result)
+    # 3. Strip // comments (handle URLs with // by only stripping when preceded by non-colon)
+    result = re.sub(r"(?<!:)\s*//.*", "", result)
+    # 4. Strip /* */ block comments
+    result = re.sub(r"/\*[\s\S]*?\*/", "", result)
+    # 5. Strip trailing commas before ] or } — repeat for nested cases
+    for _ in range(5):
+        prev = result
+        result = re.sub(r",\s*([\]}])", r"\1", result)
+        if result == prev:
+            break
+    return result
+
+
+def _write_opencode_cfg(opencode_cfg: Path, base_url: str, router_key: str = ""):
+    opencode_cfg.parent.mkdir(parents=True, exist_ok=True)
+
+    if not opencode_cfg.exists():
+        initial_data = {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {}
         }
-        
-        # Write back with nice formatting
-        opencode_cfg.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        opencode_cfg.write_text(json.dumps(initial_data, indent=2), encoding="utf-8")
+
+    content = opencode_cfg.read_text(encoding="utf-8")
+    json_content = _clean_jsonc(content)
+    data = json.loads(json_content)
+
+    api_key = router_key or get_router_key()
+
+    providers = data.setdefault("provider", {})
+    providers["unified-router"] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Unified Router",
+        "options": {
+            "baseURL": base_url,
+            "apiKey": api_key
+        }
+    }
+
+    opencode_cfg.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def configure_opencode(base_url: str = "http://localhost:3333/v1", router_key: str = ""):
+    try:
+        key = router_key or get_router_key()
+
+        linux_cfg = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+        _write_opencode_cfg(linux_cfg, base_url, key)
+
+        win_home = _get_windows_home()
+        if win_home:
+            win_cfg = win_home / ".config" / "opencode" / "opencode.jsonc"
+            _write_opencode_cfg(win_cfg, base_url, key)
+
         return True, "Successfully configured OpenCode"
     except Exception as e:
         return False, str(e)
@@ -189,6 +261,36 @@ def resolve_env(value: str) -> str:
     return value
 
 
+def _read_auth_json(path: Path) -> dict[str, Any] | None:
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        pass
+    return None
+
+
+AUTH_KEY_MAP = {
+    "nvidia": "nvidia",
+    "openrouter": "openrouter",
+    "opencode": "opencode",
+    "opencode-go": "opencode_zen",
+    "groq": "groq",
+    "google": "gemini",
+}
+
+
+def _match_auth_key(auth: dict, provider_name: str) -> str | None:
+    for k, v in auth.items():
+        mapped = AUTH_KEY_MAP.get(k.lower())
+        if mapped == provider_name:
+            if isinstance(v, str):
+                return v
+            if isinstance(v, dict) and "key" in v:
+                return v["key"]
+    return None
+
+
 def detect_api_key(pcfg: dict) -> str | None:
     key = os.environ.get(pcfg.get("env_key", ""))
     if key:
@@ -198,15 +300,19 @@ def detect_api_key(pcfg: dict) -> str | None:
         if key:
             return key
 
-    if AUTH_FILE.exists():
-        try:
-            auth = json.loads(AUTH_FILE.read_text())
-            provider_name = pcfg.get("env_key", "").replace("_API_KEY", "").replace("_TOKEN", "").lower()
-            for k, v in auth.items():
-                if provider_name in k.lower() and isinstance(v, str):
-                    return v
-        except Exception:
-            pass
+    provider_name = pcfg.get("env_key", "").replace("_API_KEY", "").replace("_TOKEN", "").lower()
+
+    auth_paths = [AUTH_FILE]
+    win_home = _get_windows_home()
+    if win_home:
+        auth_paths.append(win_home / ".local" / "share" / "opencode" / "auth.json")
+
+    for auth_path in auth_paths:
+        auth = _read_auth_json(auth_path)
+        if auth:
+            matched = _match_auth_key(auth, provider_name)
+            if matched:
+                return matched
 
     return None
 

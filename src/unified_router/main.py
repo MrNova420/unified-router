@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
-from .config import load_config, CONFIG_DIR, CONFIG_FILE, get_provider_info, PROVIDER_TYPE_BADGES
+from .config import load_config, CONFIG_DIR, CONFIG_FILE, get_provider_info, PROVIDER_TYPE_BADGES, get_router_key
 from .registry import build_providers, load_registry
 from .router import Router
 from .observability import new_trace, current_trace, setup_logging
@@ -179,6 +179,24 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @_app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/v1/"):
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:]
+            else:
+                token = auth_header.strip()
+            expected = get_router_key()
+            if token != expected:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"message": "Invalid router API key", "type": "auth_error"}},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
     @_app.middleware("http")
     async def trace_middleware(request: Request, call_next):
@@ -419,11 +437,21 @@ _LANDING_BODY = """
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="stat-cards"></div>
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div class="bg-card rounded-xl border border-border p-5">
-        <h3 class="text-sm font-semibold text-gray-400 mb-4">Quick Start</h3>
-        <div class="space-y-3 text-sm">
-          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">1</span><div><p class="text-white font-medium">Point your client</p><code class="block mt-1 px-3 py-2 bg-surface rounded-lg text-info font-mono text-xs select-all">http://localhost:3333/v1</code></div></div>
-          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">2</span><div><p class="text-white font-medium">Use any model name or <code class="text-info">auto</code></p><code class="block mt-1 px-3 py-2 bg-surface rounded-lg text-info font-mono text-xs select-all">model: "auto"</code></div></div>
-          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">3</span><div><p class="text-white font-medium">OpenAI-compatible API</p><p class="text-gray-500">Works with any SDK &mdash; just change the base URL</p></div></div>
+        <h3 class="text-sm font-semibold text-gray-400 mb-4">Connect OpenCode</h3>
+        <div class="space-y-2 text-sm">
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">1</span><div><p class="text-white font-medium">In OpenCode desktop, run <code class="text-info">/connect</code></p></div></div>
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">2</span><div><p class="text-white font-medium">Choose <code class="text-info">Other</code> (Custom provider)</p></div></div>
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">3</span><div><p class="text-white font-medium">Fill in the fields:</p>
+            <div class="mt-2 space-y-1.5 text-xs">
+              <div><span class="text-gray-500">Provider ID:</span> <code class="text-info font-mono">unified-router</code></div>
+              <div><span class="text-gray-500">Display name:</span> <code class="text-info font-mono">Unified Router</code></div>
+              <div><span class="text-gray-500">Base URL:</span> <code class="text-info font-mono">http://localhost:3333/v1</code></div>
+              <div><span class="text-gray-500">API key:</span> <code id="router-key-display" class="text-info font-mono select-all">Loading...</code></div>
+              <div><span class="text-gray-500">Models:</span> <span class="text-gray-500">leave empty</span></div>
+              <div><span class="text-gray-500">Headers:</span> <span class="text-gray-500">leave empty</span></div>
+            </div>
+          </div></div>
+          <div class="flex items-start gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-brand/20 text-brand text-xs flex items-center justify-center font-bold">4</span><div><p class="text-white font-medium">Models auto-populate from <code class="text-info">/v1/models</code></p></div></div>
         </div>
       </div>
       <div class="bg-card rounded-xl border border-border p-5">
@@ -438,45 +466,56 @@ _LANDING_BODY = """
   </div>
 
 <script>
-function loadDashboard(){
-  Promise.all([fetch('/health'),fetch('/v1/stats'),fetch('/v1/models')])
-    .then(([hR,sR,mR])=>Promise.all([hR.json(),sR.json(),mR.json()]))
-    .then(([h,s,m])=>{
-      const hc=h.providers_configured||0,ha=h.providers_active||0,hm=h.models_cached||0;
-      const hs=h.status||'unknown';
-      const hbadge=hs==='ok'?'ok':hs==='degraded'?'warn':'err';
-      document.getElementById('health-badge').innerHTML=
-        '<span class="inline-block w-2.5 h-2.5 rounded-full bg-'+hbadge+' animate-pulse"></span>'+
-        '<span class="text-sm text-'+hbadge+' font-medium capitalize">'+hs+'</span>';
-      const ps=s.providers||{},c=s.cache||{},q=s.queue||{};
-      const totalReqs=Object.values(ps).reduce((a,v)=>a+(v.requests||0),0);
-      const totalErrs=Object.values(ps).reduce((a,v)=>a+(v.errors||0),0);
-      const totalTokens=Object.values(ps).reduce((a,v)=>a+(v.tokens||0),0);
-      const avgLat=Object.values(ps).length?Math.round(Object.values(ps).reduce((a,v)=>a+(v.latency_ema_ms||0),0)/Object.values(ps).length):0;
-      document.getElementById('stat-cards').innerHTML=[
-        dCard('Providers',ha+'/'+hc,'active','#6366f1'),
-        dCard('Models',hm,'cached','#3b82f6'),
-        dCard('Requests',totalReqs.toLocaleString(),'total','#22c55e'),
-        dCard('Avg Latency',avgLat+'ms','#f59e0b'),
-        dCard('Errors',totalErrs.toLocaleString(),'total','#ef4444'),
-        dCard('Tokens',totalTokens.toLocaleString(),'total','#8b5cf6'),
-        dCard('Cache Hits',c.hits||0,'hit rate #','#06b6d4'),
-        dCard('Queue',q.pending||0+'/'+(q.size||100),'pending','#f97316'),
-      ].join('');
-      const badges=Object.entries(ps).map(([n,v])=>{
-        let cls='bg-gray-700 text-gray-400';
-        if(v.circuit_state==='OPEN')cls='bg-err/20 text-err';
-        else if(v.rate_limited)cls='bg-warn/20 text-warn';
-        else cls='bg-ok/20 text-ok';
-        return '<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium '+cls+'"><span class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></span>'+n+'</span>';
-      }).join('');
-      document.getElementById('provider-badges').innerHTML=badges||'<span class="text-gray-600 text-sm">No providers</span>';
-      const models=(m.data||[]);
-      document.getElementById('model-count').textContent='('+models.length+')';
-      document.getElementById('model-grid').innerHTML=models.slice(0,120).map(x=>
-        '<div class="px-2.5 py-1.5 bg-surface rounded-lg text-xs text-gray-300 truncate" title="'+x.id+'">'+x.id+'</div>'
-      ).join('')||'<span class="text-gray-600 text-sm">No models loaded</span>';
-    }).catch(e=>{console.error(e);document.getElementById('health-badge').innerHTML='<span class="text-err text-sm">Connection lost</span>';});
+async function loadDashboard(){
+  try {
+    const [hR, sR, mR, kR] = await Promise.all([
+      fetch('/health'),
+      fetch('/v1/stats'),
+      fetch('/v1/models'),
+      fetch('/router-key')
+    ]);
+    const [h, s, m, k] = await Promise.all([hR.json(), sR.json(), mR.json(), kR.json()]);
+    
+    document.getElementById('router-key-display').textContent = k.key;
+
+    const hc=h.providers_configured||0,ha=h.providers_active||0,hm=h.models_cached||0;
+    const hs=h.status||'unknown';
+    const hbadge=hs==='ok'?'ok':hs==='degraded'?'warn':'err';
+    document.getElementById('health-badge').innerHTML=
+      '<span class="inline-block w-2.5 h-2.5 rounded-full bg-'+hbadge+' animate-pulse"></span>'+
+      '<span class="text-sm text-'+hbadge+' font-medium capitalize">'+hs+'</span>';
+    const ps=s.providers||{},c=s.cache||{},q=s.queue||{};
+    const totalReqs=Object.values(ps).reduce((a,v)=>a+(v.requests||0),0);
+    const totalErrs=Object.values(ps).reduce((a,v)=>a+(v.errors||0),0);
+    const totalTokens=Object.values(ps).reduce((a,v)=>a+(v.tokens||0),0);
+    const avgLat=Object.values(ps).length?Math.round(Object.values(ps).reduce((a,v)=>a+(v.latency_ema_ms||0),0)/Object.values(ps).length):0;
+    document.getElementById('stat-cards').innerHTML=[
+      dCard('Providers',ha+'/'+hc,'active','#6366f1'),
+      dCard('Models',hm,'cached','#3b82f6'),
+      dCard('Requests',totalReqs.toLocaleString(),'total','#22c55e'),
+      dCard('Avg Latency',avgLat+'ms','#f59e0b'),
+      dCard('Errors',totalErrs.toLocaleString(),'total','#ef4444'),
+      dCard('Tokens',totalTokens.toLocaleString(),'total','#8b5cf6'),
+      dCard('Cache Hits',c.hits||0,'hit rate #','#06b6d4'),
+      dCard('Queue',q.pending||0+'/'+(q.size||100),'pending','#f97316'),
+    ].join('');
+    const badges=Object.entries(ps).map(([n,v])=>{
+      let cls='bg-gray-700 text-gray-400';
+      if(v.circuit_state==='OPEN')cls='bg-err/20 text-err';
+      else if(v.rate_limited)cls='bg-warn/20 text-warn';
+      else cls='bg-ok/20 text-ok';
+      return '<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium '+cls+'"><span class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></span>'+n+'</span>';
+    }).join('');
+    document.getElementById('provider-badges').innerHTML=badges||'<span class="text-gray-600 text-sm">No providers</span>';
+    const models=(m.data||[]);
+    document.getElementById('model-count').textContent='('+models.length+')';
+    document.getElementById('model-grid').innerHTML=models.slice(0,120).map(x=>
+      '<div class="px-2.5 py-1.5 bg-surface rounded-lg text-xs text-gray-300 truncate" title="'+x.id+'">'+x.id+'</div>'
+    ).join('')||'<span class="text-gray-600 text-sm">No models loaded</span>';
+  } catch(e){
+    console.error(e);
+    document.getElementById('health-badge').innerHTML='<span class="text-err text-sm">Connection lost</span>';
+  }
 }
 function dCard(label,value,sub,color){
   return '<div class="bg-card rounded-xl border border-border p-4 hover:border-'+color+'/40 transition-colors">'+
@@ -865,6 +904,11 @@ startPoll(loadAnalytics,5000);
 
 _ANALYTICS_HTML = None  # built dynamically
 
+
+@app.get("/router-key")
+async def get_router_key_endpoint():
+    from .config import get_router_key
+    return {"key": get_router_key()}
 
 @app.get("/health")
 async def health():

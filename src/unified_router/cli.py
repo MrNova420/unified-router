@@ -26,6 +26,8 @@ from .config import (
     PROVIDER_TYPE_BADGES,
     PROVIDER_TYPE_COLORS,
     configure_opencode,
+    get_router_key,
+    generate_router_key,
 )
 from .registry import load_registry
 from . import __version__
@@ -235,198 +237,198 @@ def init(
         console.print("Run with --force to overwrite")
         return
 
-    console.print(Panel.fit(
-        "[bold cyan]Unified Router - Setup Wizard[/bold cyan]\n"
-        "Connect your free LLM providers. We'll auto-detect keys from your environment.\n"
-        "[dim]Press Enter to skip any provider. Press 'o' to open signup URL in browser.[/dim]",
-        border_style="cyan",
-    ))
-
     registry = load_registry()
     config = DEFAULT_CONFIG.copy()
     config["priority"] = list(DEFAULT_CONFIG["priority"])
     config["providers"] = {k: dict(v) for k, v in DEFAULT_CONFIG["providers"].items()}
 
-    if guide:
-        console.print("\n[bold yellow]Guide Mode[/bold yellow] - Let's walk through getting keys for the top providers:")
-        console.print("  We'll open signup pages so you can create accounts and generate API keys.")
-        input("  Press Enter to start...")
-
-    groups = _group_providers(registry)
-    group_titles = {
-        "free": "[Easy] Always Free - No phone, no credit card required",
-        "phone": "[Phone] Phone Verify Required",
-        "credits": "[Credits] Free Trials & Credits",
-        "paid": "[Paid] Paid Services (no free tier)",
-    }
-    group_styles = {
-        "free": "green",
-        "phone": "yellow",
-        "credits": "blue",
-        "paid": "dim",
-    }
-
+    # --- Phase 1: Pre-detect all environment keys ---
     auto_detected_count = 0
     configured_count = 0
-    config_written = False
 
-    for group_key in ("free", "phone", "credits", "paid"):
-        group = groups.get(group_key, [])
-        if not group:
-            continue
-        title = group_titles.get(group_key, group_key)
-        style = group_styles.get(group_key, "white")
-        console.print(f"\n[bold {style}]  {title}[/bold {style}]")
+    for name, pcfg in config["providers"].items():
+        detected = detect_api_key(pcfg)
+        if detected:
+            config["providers"][name]["api_key"] = detected
+            auto_detected_count += 1
+            configured_count += 1
 
-        for name, reg in group:
-            display_name = reg.get("name", name)
-            signup_url = reg.get("signup_url", "")
-            badge = PROVIDER_TYPE_BADGES.get(group_key, "")
+    # --- Phase 2: Strategy Selection (skip if --auto or forced) ---
+    if guide:
+        strategy = "guide"
+    elif auto:
+        strategy = "auto"
+    elif sys.stdin.isatty():
+        console.print(Panel.fit(
+            "[bold cyan]Unified Router - Setup Wizard[/bold cyan]\n"
+            f"[dim]Welcome! This wizard connects your LLM providers so you can route requests across them.\n"
+            f"I auto-detected [bold]{auto_detected_count}[/bold] API keys from your environment.[/dim]\n\n"
+            "How would you like to proceed?",
+            border_style="cyan",
+        ))
+        console.print()
+        console.print("  [bold]1)[/bold] Web Dashboard [dim](set up API keys visually at localhost:3333/settings)[/dim]")
+        console.print("  [bold]2)[/bold] CLI Wizard [dim](type or paste each key into the terminal)[/dim]")
+        console.print(f"  [bold]3)[/bold] Auto-Detect Only [dim](use only the {auto_detected_count} keys found in env vars)[/dim]")
+        console.print()
+        choice = input("  Choice [1]: ").strip() or "1"
+        if choice == "1":
+            strategy = "web"
+        elif choice == "3":
+            strategy = "auto"
+        else:
+            strategy = "cli"
+    else:
+        strategy = "cli"
 
-            pcfg = config["providers"].get(name, {})
-            needs_account = bool(reg.get("env_account_id"))
-            detected = detect_api_key(pcfg)
-            current_key = pcfg.get("api_key", "") or detected or ""
+    # --- Phase 3: Interactive CLI configuration (if chosen) ---
+    if strategy == "cli":
+        groups = _group_providers(registry)
+        group_titles = {
+            "free": "[Easy] Always Free - No phone, no credit card required",
+            "phone": "[Phone] Phone Verify Required",
+            "credits": "[Credits] Free Trials & Credits",
+            "paid": "[Paid] Paid Services (no free tier)",
+        }
+        group_styles = {
+            "free": "green",
+            "phone": "yellow",
+            "credits": "blue",
+            "paid": "dim",
+        }
 
-            if auto:
+        if guide:
+            console.print("\n[bold yellow]Guide Mode[/bold yellow] - Let's walk through getting keys for the top providers:")
+            console.print("  We'll open signup pages so you can create accounts and generate API keys.")
+            input("  Press Enter to start...")
+
+        for group_key in ("free", "phone", "credits", "paid"):
+            group = groups.get(group_key, [])
+            if not group:
+                continue
+            title = group_titles.get(group_key, group_key)
+            style = group_styles.get(group_key, "white")
+            console.print(f"\n[bold {style}]  {title}[/bold {style}]")
+
+            for name, reg in group:
+                display_name = reg.get("name", name)
+                signup_url = reg.get("signup_url", "")
+                badge = PROVIDER_TYPE_BADGES.get(group_key, "")
+                pcfg = config["providers"].get(name, {})
+                needs_account = bool(reg.get("env_account_id"))
+                current_key = pcfg.get("api_key", "") or ""
+
                 if current_key:
-                    config["providers"][name]["api_key"] = current_key
-                    auto_detected_count += 1
                     configured_count += 1
-                continue
-
-            if needs_account:
-                current_acct = detect_account_id(pcfg) or ""
-
-            if current_key and (not needs_account or current_acct):
-                if not config["providers"][name].get("api_key"):
-                    config["providers"][name]["api_key"] = current_key
-                auto_detected_count += 1
-                configured_count += 1
-                continue
-
-            if needs_account and guide:
-                console.print(f"\n  [bold]{display_name}[/bold] {badge}")
-                console.print(f"  Get API token at: [blue]{signup_url}[/blue]")
-                console.print(f"  Also need your Account ID from the Cloudflare dashboard.")
-                answer = input("  Open signup page? [Y/n/o]: ").strip().lower()
-                if answer == "o" or answer == "y" or answer == "":
-                    _open_browser(signup_url)
-
-                current_acct_val = detect_account_id(pcfg) or ""
-                if not current_acct_val:
-                    acct_prompt = f"  Account ID (required, press Enter to skip): "
-                else:
-                    acct_prompt = f"  Account ID [{current_acct_val}]: "
-                acct = input(acct_prompt).strip()
-                if not acct and current_acct_val:
-                    acct = current_acct_val
-                if acct:
-                    config["providers"][name]["account_id"] = acct
-                    console.print(f"  [dim]Account ID set[/dim]")
-                else:
-                    console.print(f"  [dim][--] {display_name} skipped (no account ID)[/dim]")
                     continue
 
-                current_k = detect_api_key(pcfg) or ""
-                key_hint = f"  API key (or press Enter to skip): "
-                key = input(key_hint).strip()
-                if not key and current_k:
-                    key = current_k
-                if key:
-                    config["providers"][name]["api_key"] = key
-                    configured_count += 1
-                    console.print(f"  [green]  [OK] {display_name} configured[/green]")
-                else:
-                    console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
-
-            elif guide:
-                console.print(f"\n  [bold]{display_name}[/bold] {badge}")
-                free_tier = reg.get("free_tier", "")
-                if free_tier:
-                    console.print(f"  [dim]Free tier: {free_tier}[/dim]")
-                console.print(f"  Signup: [blue]{signup_url}[/blue]")
-                answer = input("  Open signup page? [Y/n]: ").strip().lower()
-                if answer == "y" or answer == "":
-                    _open_browser(signup_url)
-                console.print(f"  [dim]After signing up, run 'unified-router init' again to add your key.[/dim]")
-                input("  Press Enter to continue...")
-
-            else:
-                if needs_account:
-                    current_acct_val = detect_account_id(pcfg) or ""
-                    if not current_acct_val:
-                        acct_prompt = f"  Account ID (required): "
-                    else:
-                        acct_prompt = f"  Account ID [{current_acct_val}]: "
-                    acct = input(acct_prompt).strip()
-                    if not acct and current_acct_val:
-                        acct = current_acct_val
-                    if acct:
-                        config["providers"][name]["account_id"] = acct
-                    else:
-                        console.print(f"  [dim]  [--] {display_name} skipped (no account ID)[/dim]")
-                        continue
-
-                if signup_url:
-                    console.print(f"  Get key at: [blue]{signup_url}[/blue]")
-
-                key = input(f"  {badge} {display_name} - API key (or press Enter to skip, 'o' to open signup): ").strip()
-                if key.lower() == "o":
-                    _open_browser(signup_url)
-                    key = input(f"  {badge} {display_name} - API key (or press Enter to skip): ").strip()
-                if key:
-                    config["providers"][name]["api_key"] = key
-                    configured_count += 1
-                    console.print(f"  [green]  [OK] {display_name} configured[/green]")
+                if guide:
+                    console.print(f"\n  [bold]{display_name}[/bold] {badge}")
+                    free_tier = reg.get("free_tier", "")
+                    if free_tier:
+                        console.print(f"  [dim]Free tier: {free_tier}[/dim]")
+                    console.print(f"  Signup: [blue]{signup_url}[/blue]")
+                    answer = input("  Open signup page? [Y/n]: ").strip().lower()
+                    if answer == "y" or answer == "":
+                        _open_browser(signup_url)
+                    console.print(f"  [dim]After signing up, run 'unified-router init' again to add your key.[/dim]")
+                    input("  Press Enter to continue...")
                 else:
                     if needs_account:
-                        extra = " or account ID"
-                    console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
+                        console.print(f"\n  [bold]{display_name}[/bold] {badge}")
+                        console.print(f"  Get API token at: [blue]{signup_url}[/blue]")
+                        console.print(f"  Also need your Account ID from the provider dashboard.")
+                        answer = input("  Open signup page? [Y/n/o]: ").strip().lower()
+                        if answer == "o" or answer == "y" or answer == "":
+                            _open_browser(signup_url)
+                        current_acct_val = detect_account_id(pcfg) or ""
+                        acct_prompt = f"  Account ID [{current_acct_val}]: " if current_acct_val else "  Account ID (required, press Enter to skip): "
+                        acct = input(acct_prompt).strip()
+                        if not acct and current_acct_val:
+                            acct = current_acct_val
+                        if acct:
+                            config["providers"][name]["account_id"] = acct
+                            console.print(f"  [dim]Account ID set[/dim]")
+                        else:
+                            console.print(f"  [dim][--] {display_name} skipped (no account ID)[/dim]")
+                            continue
+                        key = input(f"  API key (or press Enter to skip): ").strip()
+                        if key:
+                            config["providers"][name]["api_key"] = key
+                            configured_count += 1
+                            console.print(f"  [green]  [OK] {display_name} configured[/green]")
+                        else:
+                            console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
+                    else:
+                        if signup_url:
+                            console.print(f"  Get key at: [blue]{signup_url}[/blue]")
+                        key = input(f"  {badge} {display_name} - API key (or press Enter to skip, 'o' to open signup): ").strip()
+                        if key.lower() == "o":
+                            _open_browser(signup_url)
+                            key = input(f"  {badge} {display_name} - API key (or press Enter to skip): ").strip()
+                        if key:
+                            config["providers"][name]["api_key"] = key
+                            configured_count += 1
+                            console.print(f"  [green]  [OK] {display_name} configured[/green]")
+                        else:
+                            console.print(f"  [dim]  [--] {display_name} skipped[/dim]")
 
+    else:
+        # For web or auto strategy, configured_count already reflects auto-detected
+        pass
+
+    # --- Phase 4: Write config ---
     import yaml
     CONFIG_FILE.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
-    config_written = True
 
+    # --- Phase 4b: Generate router API key ---
+    router_key = get_router_key()
+    server_cfg = config.get("server", {})
+    base_url = f"http://{server_cfg.get('host', '127.0.0.1')}:{server_cfg.get('port', 3333)}/v1"
+
+    # --- Phase 5: Summary & Next Steps ---
     console.print()
     console.print(Panel.fit(
         f"[bold green][OK] Setup complete![/bold green]\n"
         f"Config saved to: {CONFIG_FILE}\n"
-        f"Providers configured: {configured_count} ({auto_detected_count} auto-detected)\n"
-        f"Providers skipped: {len(config['providers']) - configured_count}",
+        f"Providers configured: {configured_count} (via env vars: {auto_detected_count})\n"
+        f"Providers available via dashboard: {len(config['providers'])}\n\n"
+        f"[bold]Router API Key:[/bold] [cyan]{router_key}[/cyan]\n"
+        f"[bold]Base URL:[/bold] [cyan]{base_url}[/cyan]\n\n"
+        f"[bold]Next Steps:[/bold]\n"
+        + (f"  - Open [bold]http://{server_cfg.get('host', '127.0.0.1')}:{server_cfg.get('port', 3333)}/settings[/bold] to add more API keys\n" if strategy != "cli" else "  - Start the router: [bold]unified-router start[/bold]\n")
+        + "  - Start the router: [bold]unified-router start[/bold]\n"
+        + "  - In OpenCode desktop, run [bold]/connect[/bold] -> [bold]Other[/bold] (Custom provider)\n"
+        f"    - Provider ID: [cyan]unified-router[/cyan]\n"
+        f"    - Display name: [cyan]Unified Router[/cyan]\n"
+        f"    - Base URL: [cyan]{base_url}[/cyan]\n"
+        f"    - API key: [cyan]{router_key}[/cyan]\n"
+        f"    - Models (optional): leave empty to auto-discover\n"
+        f"    - Headers: leave empty",
         border_style="green",
     ))
 
-    if configured_count > 0:
+    # --- Phase 6: OpenCode Configuration ---
+    console.print()
+    if sys.stdin.isatty():
+        setup_opencode = input("  Would you like to automatically configure OpenCode? [Y/n]: ").strip().lower()
+    else:
+        setup_opencode = "y"
+    if setup_opencode == "y" or setup_opencode == "":
+        success, msg = configure_opencode(router_key=router_key)
+        if success:
+            console.print("[green]  [OK] OpenCode configured successfully![/green]")
+            console.print(f"  [dim]Router API key written to opencode.jsonc:[/dim]  [cyan]{router_key}[/cyan]")
+        else:
+            console.print(f"[yellow]  [ERR] Could not auto-configure OpenCode: {msg}[/yellow]")
+            console.print("  [dim]You can manually add the provider to your opencode.jsonc file.[/dim]")
+            console.print("  [dim]Run 'unified-router config' to see the snippet.[/dim]")
+
+    if configured_count > 0 and sys.stdin.isatty() and strategy == "cli":
         console.print()
         test_choice = input("  Test your configured providers now? [Y/n]: ").strip().lower()
         if test_choice == "y" or test_choice == "":
             _run_health_check()
-
-    console.print()
-    console.print("[bold]To use with OpenCode, add this to your opencode.jsonc:[/bold]")
-    snippet = '''{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "unified-router": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Unified Router",
-      "options": {
-        "baseURL": "http://localhost:3333/v1"
-      }
-    }
-  }
-}'''
-    console.print(Panel(snippet, border_style="blue", title="opencode.jsonc"))
-
-    console.print()
-    setup_opencode = input("  Would you like to automatically configure OpenCode? [Y/n]: ").strip().lower()
-    if setup_opencode == "y" or setup_opencode == "":
-        success, msg = configure_opencode()
-        if success:
-            console.print("[green]  [OK] OpenCode configured successfully![/green]")
-        else:
-            console.print(f"[red]  [ERR] Failed to configure OpenCode: {msg}[/red]")
 
 
 
@@ -493,18 +495,22 @@ def config():
     console.print(f"\n[bold]Config file:[/bold] {CONFIG_FILE}")
 
     console.print("\n[bold]OpenCode integration snippet:[/bold]")
-    snippet = '''{
+    router_key = get_router_key()
+    server = cfg.get("server", {})
+    base_url = f"http://{server.get('host', '127.0.0.1')}:{server.get('port', 3333)}/v1"
+    snippet = f'''{{
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "unified-router": {
+  "provider": {{
+    "unified-router": {{
       "npm": "@ai-sdk/openai-compatible",
       "name": "Unified Router",
-      "options": {
-        "baseURL": "http://localhost:3333/v1"
-      }
-    }
-  }
-}'''
+      "options": {{
+        "baseURL": "{base_url}",
+        "apiKey": "{router_key}"
+      }}
+    }}
+  }}
+}}'''
     console.print(Panel(snippet, border_style="blue"))
 
 

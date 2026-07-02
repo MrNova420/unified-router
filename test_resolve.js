@@ -1,0 +1,1 @@
+console.log(require.resolve('@ai-sdk/openai-compatible'));
