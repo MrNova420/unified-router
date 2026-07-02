@@ -1,6 +1,6 @@
 # Unified Router v2.0.0
 
-**One endpoint to rule them all.** Production-grade LLM router across **44 free providers** with circuit breakers, real retry-after handling, request queues, input validation, and observability.
+**One endpoint to rule them all.** Production-grade LLM router across **44 free providers** with circuit breakers, real retry-after handling, request queues, input validation, observability, and built-in API key auth.
 
 ```bash
 pip install git+https://github.com/MrNova420/unified-router.git
@@ -13,6 +13,7 @@ unified-router start
 - **Production-grade circuit breaker** per provider — stops calling dead APIs before they hurt you
 - **Real retry-after handling** — when rate limited, waits the ACTUAL time the provider says (not a guess)
 - **Single OpenAI-compatible endpoint** (`/v1/chat/completions`)
+- **Built-in API key auth** — auto-generated `ur-sk-<random>` key, validates `Authorization: Bearer` on all `/v1/*` endpoints
 - **Auto-discovers** all models from every provider you configure
 - **Smart provider fallback** — if one provider rate-limits or errors, automatically tries the next
 - **Smart model fallback** — if ALL providers fail for a model, auto-finds similar models and retries across all providers
@@ -45,32 +46,30 @@ pip install -e .
 ## Quick Start
 
 ```bash
-unified-router init        # Interactive setup wizard
+unified-router init        # Interactive setup wizard (auto-detects env keys)
 unified-router start       # Start the server at http://localhost:3333
 ```
 
-That's it. Open `http://localhost:3333/admin` for the dashboard or `http://localhost:3333/settings` to configure providers from your browser.
+After `init`, you'll see your router API key and base URL displayed. Open `http://localhost:3333/settings` to configure providers from your browser. The landing page at `/` includes a step-by-step `/connect` guide.
 
 ## Use with OpenCode
 
-Add to your `~/.config/opencode/opencode.jsonc`:
+### Option A: Automatic config (recommended)
+`unified-router init` will offer to auto-configure OpenCode for you. It writes the router API key directly to your `opencode.jsonc`.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "unified-router": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Unified Router",
-      "options": {
-        "baseURL": "http://localhost:3333/v1"
-      }
-    }
-  }
-}
+### Option B: Manual via `/connect`
+In OpenCode desktop, run `/connect`, choose **Other** (Custom provider), and fill in:
+
+```
+Provider ID:     unified-router
+Display name:    Unified Router
+Base URL:        http://localhost:3333/v1
+API key:         <your router key>    (shown by `unified-router init` or at `/router-key`)
+Models:          leave empty
+Headers:         leave empty
 ```
 
-Now in OpenCode, run `/models` and pick any model from any provider. The router handles the rest.
+Models auto-populate from `/v1/models` once connected.
 
 ## How Routing Works
 
@@ -194,8 +193,8 @@ When `model` is `"auto"` or omitted, the router:
 
 | Command | Description |
 |---------|-------------|
-| `unified-router init` | Interactive setup wizard (auto-detects env keys) |
-| `unified-router init --auto` | Non-interactive — use env-detected keys only |
+| `unified-router init` | Interactive setup wizard (auto-detects env keys, generates router API key) |
+| `unified-router init --auto` | Non-interactive -- use env-detected keys only |
 | `unified-router init --guide` | Walk through signing up for top providers |
 | `unified-router start` | Start the server |
 | `unified-router version` | Show version |
@@ -203,7 +202,7 @@ When `model` is `"auto"` or omitted, the router:
 | `unified-router status` | Show provider configuration (keys masked) |
 | `unified-router providers` | List all 44 providers with type badges |
 | `unified-router health` | Ping all providers, check connectivity |
-| `unified-router config` | Print current config |
+| `unified-router config` | Print current config + router API key |
 | `unified-router guide` | Walk through signing up for top providers |
 | `unified-router dashboard` | Live usage stats (terminal) |
 | `unified-router dashboard --once` | One-shot stats snapshot |
@@ -213,15 +212,29 @@ When `model` is `"auto"` or omitted, the router:
 
 ## Web UI
 
-The server includes two web pages:
+The server includes three web pages:
 
-### `/admin` — Live Dashboard
+### `/` — Landing Dashboard
+- System overview and health
+- Step-by-step `/connect` guide with your router API key pre-filled
+- Provider status badges
+- Model grid (first 120 models)
+- Auto-refreshes every 5 seconds
+
+### `/admin` — Provider Dashboard
 - Provider stats (requests, errors, tokens, latency)
 - Rate-limit and circuit breaker status per provider
 - Cache hit/miss stats
-- Model list (first 100)
-- Auto-refreshes every 3 seconds
+- Model list with search filter
 - One-click config reload
+- Auto-refreshes every 3 seconds
+
+### `/analytics` — Usage Analytics
+- Lifetime requests, tokens, errors, uptime
+- Per-provider breakdown (requests, errors, tokens, avg latency, last used)
+- Top models table
+- Recent request log with time filter
+- Auto-refreshes every 5 seconds
 
 ### `/settings` — Setup Panel
 - Edit all provider API keys (password-masked inputs)
@@ -231,14 +244,20 @@ The server includes two web pages:
 
 ## API Endpoints
 
+All `/v1/*` endpoints require `Authorization: Bearer <router_key>`. Get your key from `unified-router init` or `GET /router-key`.
+
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/router-key` | Get your router API key (public) |
 | `GET` | `/v1/models` | List all models across all providers |
 | `POST` | `/v1/chat/completions` | Chat completion (streaming + non-streaming) |
 | `GET` | `/v1/stats` | Provider stats + queue stats JSON |
+| `GET` | `/usage` | Lifetime usage stats |
 | `GET` | `/health` | Deep health check (per-provider ping) |
 | `POST` | `/reload` | Hot reload config without restart |
-| `GET` | `/admin` | Live dashboard (HTML) |
+| `GET` | `/` | Landing page with /connect guide (HTML) |
+| `GET` | `/admin` | Provider dashboard (HTML) |
+| `GET` | `/analytics` | Usage analytics (HTML) |
 | `GET` | `/settings` | Setup panel (HTML) |
 | `GET` | `/settings/api` | Current config JSON (for settings panel) |
 | `POST` | `/settings/server` | Save server settings to config.yml |
@@ -324,7 +343,29 @@ The router loads this file automatically on startup.
 ### Automatic Provider Fallback
 If a provider rate-limits (429), errors (5xx), or times out, the router automatically tries the next provider in priority order that has the requested model.
 
-### Full Auto Model Routing
+## Authentication
+
+The router auto-generates an API key (`ur-sk-<random>`) on first start, stored at `~/.config/unified-router/.router_key`.
+
+All `/v1/*` endpoints require this key via `Authorization: Bearer` header:
+
+```bash
+# Get your router key
+curl http://localhost:3333/router-key
+
+# List models (with auth)
+curl -H "Authorization: Bearer ur-sk-..." http://localhost:3333/v1/models
+
+# Chat completion (with auth)
+curl -X POST http://localhost:3333/v1/chat/completions \
+  -H "Authorization: Bearer ur-sk-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+Non-`/v1/` endpoints (`/health`, `/router-key`, `/settings`, `/admin`) are public.
+
+### Auto Model Routing
 Send `model: "auto"` (or omit the `model` field entirely) and the router picks the best available model automatically:
 - Walks providers in priority order
 - On each provider, tries every model in API order
@@ -334,8 +375,9 @@ Send `model: "auto"` (or omit the `model` field entirely) and the router picks t
 - Streaming responses include an `auto_routed` SSE prefix event
 
 ```bash
-# Auto routing — no model selection needed
+# Auto routing -- no model selection needed
 curl -X POST http://localhost:3333/v1/chat/completions \
+  -H "Authorization: Bearer ur-sk-..." \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
 ```
@@ -408,20 +450,25 @@ Edit `~/.config/unified-router/config.yml` and changes are detected automaticall
 ┌─────────────┐     ┌─────────────────────────────────────┐     ┌──────────────────┐
 │  OpenCode   │────▶│  Unified Router (localhost:3333)    │────▶│  OpenRouter      │
 │  Any Client │     │                                     │     │  Groq            │
-└─────────────┘     │  /v1/chat/completions               │     │  Cerebras        │
-                    │  /v1/models                         │     │  NVIDIA          │
-                    │  /admin  (dashboard)                │     │  DeepSeek        │
-                    │  /settings  (setup panel)           │     │  Gemini          │
-                    │  /health                            │     │  xAI             │
-                    │  /reload                            │     │  Cohere          │
-                    │                                     │     │  Cloudflare      │
-                    │  Router → Provider A → 429?         │     │  +36 more        │
+└─────────────┘     │  Auth: Bearer ur-sk-...             │     │  Cerebras        │
+                    │  /v1/chat/completions               │     │  NVIDIA          │
+                    │  /v1/models                         │     │  DeepSeek        │
+                    │  /  (landing + /connect guide)      │     │  Gemini          │
+                    │  /admin  (provider dashboard)       │     │  xAI             │
+                    │  /analytics  (usage analytics)      │     │  Cohere          │
+                    │  /settings  (setup panel)           │     │  Cloudflare      │
+                    │  /health                            │     │  +36 more        │
+                    │  /router-key                        │     │                  │
+                    │  /reload                            │     │                  │
+                    │                                     │     │                  │
+                    │  Router → Provider A → 429?         │     │                  │
                     │         → Provider B → 200! ✓       │     │                  │
                     │         → All fail? → Model fallback │     │                  │
                     │                                     │     │                  │
                     │  44 providers in registry.yaml       │     │                  │
                     │  Circuit breakers + Queue + CB +    │     │                  │
                     │  Real retry-after + Observability   │     │                  │
+                    │  Auto-generated API key auth        │     │                  │
                     └─────────────────────────────────────┘     └──────────────────┘
 ```
 
@@ -469,7 +516,12 @@ PYTHONPATH=src pytest tests/ -v
 - [x] Usage tracking + dashboard (terminal + web)
 - [x] Plugin system for custom providers
 - [x] Web admin dashboard at /admin
+- [x] Web landing page at / with /connect guide
+- [x] Web analytics page at /analytics
 - [x] Web settings panel at /settings
+- [x] Auto-generated router API key auth
+- [x] OpenCode /connect flow support
+- [x] Cross-platform API key detection (env + auth.json)
 - [x] Health endpoint + CORS middleware
 - [x] .env file support
 - [x] Circuit breaker per provider
